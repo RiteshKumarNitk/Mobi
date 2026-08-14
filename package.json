@@ -1,0 +1,22 @@
+{
+  "name": "baba-communication",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Mobile Spare Parts B2B eCommerce Platform for Baba Communication (customer website, admin panel, REST API)",
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev:api": "npm run dev -w @baba/api",
+    "dev:web": "npm run dev -w @baba/web",
+    "dev:admin": "npm run dev -w @baba/admin",
+    "dev": "npm run dev:api",
+    "test": "npm run test -w @baba/api",
+    "build": "npm run build -w @baba/api && npm run build -w @baba/web && npm run build -w @baba/admin",
+    "typecheck": "npm run typecheck -w @baba/api && npm run typecheck -w @baba/web && npm run typecheck -w @baba/admin",
+    "db:generate": "npm run db:generate -w @baba/api",
+    "db:push": "npm run db:push -w @baba/api",
+    "db:seed": "npm run db:seed -w @baba/api",
+    "db:reset": "npm run db:reset -w @baba/api"
+  }
+}

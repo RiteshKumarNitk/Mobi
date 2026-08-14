@@ -1,0 +1,31 @@
+npm error Lifecycle script `dev` failed with error:
+npm error code 4294967295
+npm error path C:\Users\RiteshKumar\Documents\github_Ritesh\Mobi\apps\api
+npm error workspace @baba/api@1.0.0
+npm error location C:\Users\RiteshKumar\Documents\github_Ritesh\Mobi\apps\api
+npm error command failed
+npm error command C:\WINDOWS\system32\cmd.exe /d /s /c tsx watch src/index.ts
+docs/app/api-reference/config/next-config-js/output#caveats for more information.
+ Detected additional lockfiles: 
+   * C:\Users\RiteshKumar\Documents\github_Ritesh\Mobi\package-lock.json
+
+ ⨯ Error: Cannot find module './250.js'
+Require stack:
+- C:\Users\RiteshKumar\Documents\github_Ritesh\Mobi\apps\web\.next\server\webpack-runtime.js
+- C:\Users\RiteshKumar\Documents\github_Ritesh\Mobi\apps\web\.next\server\app\page.js
+- C:\Users\RiteshKumar\Documents\github_Ritesh\Mobi\node_modules\next\dist\server\require.js
+- C:\Users\RiteshKumar\Documents\github_Ritesh\Mobi\node_modules\next\dist\server\load-components.js
+- C:\Users\RiteshKumar\Documents\github_Ritesh\Mobi\node_modules\next\dist\build\utils.js
+- C:\Users\RiteshKumar\Documents\github_Ritesh\Mobi\node_modules\next\dist\build\swc\options.js
+- C:\Users\RiteshKumar\Documents\github_Ritesh\Mobi\node_modules\next\dist\build\swc\index.js
+- C:\Users\RiteshKumar\Documents\github_Ritesh\Mobi\node_modules\next\dist\build\analysis\parse-module.js
+- C:\Users\RiteshKumar\Documents\github_Ritesh\Mobi\node_modules\next\dist\build\analysis\get-page-static-info.js
+- C:\Users\RiteshKumar\Documents\github_Ritesh\Mobi\node_modules\next\dist\server\lib\router-utils\setup-dev-bundler.js
+- C:\Users\RiteshKumar\Documents\github_Ritesh\Mobi\node_modules\next\dist\server\lib\router-server.js
+- C:\Users\RiteshKumar\Documents\github_Ritesh\Mobi\node_modules\next\dist\server\lib\start-server.js
+    at <unknown> (C:\Users\RiteshKumar\Documents\github_Ritesh\Mobi\apps\web\.next\server\app\page.js:2:15881)
+    at Object.<anonymous> (C:\Users\RiteshKumar\Documents\github_Ritesh\Mobi\apps\web\.next\server\app\page.js:2:15930) {
+  code: 'MODULE_NOT_FOUND',
+  requireStack: [Array],
+  page: '/'
+}
