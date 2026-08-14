@@ -1,0 +1,22 @@
+# Git
+.git
+.gitignore
+
+# Dependencies — installed inside the image
+node_modules
+**/node_modules
+
+# Build output
+**/.next
+**/dist
+**/out
+
+# Logs / local state
+*.log
+.freebuff
+.DS_Store
+
+# Secrets — injected via environment at runtime, never baked into images
+**/.env
+**/.env.local
+**/.env.*.local

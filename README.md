@@ -19,7 +19,7 @@ similar in business capability to CellSpare.com:
 | Android app | Flutter 3 (Dart) + webview_flutter (in-app browser) |
 | Auth | JWT (access + rotating refresh) + OTP (5 min expiry) |
 | Payments | Razorpay (mock mode without keys) |
-| Hosting (prod) | Any cloud; `docker-compose.yml` included for Postgres |
+| Hosting (prod) | Any cloud; `docker-compose.yml` runs the full stack (API + web + admin) |
 
 ## Quick Start
 
@@ -78,6 +78,20 @@ API smoke test (requires the API running):
 
 ```bash
 bash apps/api/scripts/smoke.sh
+```
+
+API load test (requires [k6](https://k6.io)):
+
+```bash
+npx k6 run apps/api/scripts/load-test.js                       # against localhost
+npx k6 run -e API_URL=https://api.example.com/api apps/api/scripts/load-test.js
+```
+
+Interactive API reference (Swagger UI — served by the API itself):
+
+```
+http://localhost:4000/api/docs      # rendered docs
+http://localhost:4000/api/docs.json # OpenAPI 3.0 spec (JSON)
 ```
 
 ### Android app (`mobile`)
@@ -173,7 +187,36 @@ npm run db:push   # create/update tables
 npm run db:seed   # demo catalog + admin/customer accounts (idempotent)
 ```
 
-A `docker-compose.yml` is included if you prefer a local Postgres instead of Neon.
+### Docker
+
+The repo ships production `Dockerfile`s for all three apps plus a `docker-compose.yml`
+for the full stack. Docker is **not** required for development (see Quick Start above);
+this is for deploy or production-like local runs.
+
+```bash
+# 1. Create a .env with your secrets (see docker-compose.yml for the full list)
+echo "DATABASE_URL=postgresql://…neon.tech/…" >> .env
+echo "JWT_SECRET=$(openssl rand -hex 32)" >> .env
+
+# 2. Build and start api (:4000) + web (:3000) + admin (:3001)
+docker compose up -d --build
+
+# Optional: local Postgres instead of Neon (offline dev)
+docker compose --profile localdb up -d db
+```
+
+The API image runs `prisma generate` + compiles TypeScript, then runs `node dist/index.js`
+with `NODE_ENV=production` (the production boot guard refuses the default JWT secret).
+The web/admin images bake `NEXT_PUBLIC_API_URL` at build time (build arg; defaults to
+`http://localhost:4000/api`). Image builds are unverified on this machine (no Docker CLI
+here) but follow the standard multi-stage pattern.
+
+### CI/CD
+
+`.github/workflows/ci.yml` runs on every push/PR to `main`: typecheck → build for all
+three workspaces, plus the API test suite when the `DATABASE_URL` / `JWT_SECRET`
+secrets are configured (a Neon branch works well as a test database; the suite is
+self-cleaning).
 
 ### Going live checklist
 - [ ] Change `JWT_SECRET`, set `OTP_DEBUG=false`, add real Razorpay keys
@@ -181,7 +224,8 @@ A `docker-compose.yml` is included if you prefer a local Postgres instead of Neo
 - [ ] Wire up an SMS gateway for OTPs (`src/lib/otp.ts`) and SMTP for emails (`src/lib/mailer.ts`)
 - [ ] Upload product images to Cloudinary/CDN and set `imageUrl`s (uploads endpoint not yet wired)
 - [ ] Add HTTPS, WAF/rate limiting at the proxy, Sentry/APM monitoring
-- [ ] CI/CD via GitHub Actions (build → test → docker → deploy)
+- [x] CI/CD via GitHub Actions (build → test → docker → deploy) — workflow in `.github/workflows/ci.yml`
+- [x] API reference docs — Swagger UI at `/api/docs` (OpenAPI 3.0 spec)
 
 ## Project Structure
 
@@ -217,9 +261,10 @@ mobile/                Flutter Android app (in-app browser)
 - Activity logging on all admin mutations; backups snapshot core tables to JSON files
 
 ## Roadmap
-1. **Automated tests** — Jest + Supertest integration tests for the API, React Testing Library
-   for the frontends, Cypress E2E for key journeys.
-2. **CI/CD pipeline** — GitHub Actions: lint/typecheck → tests → Docker build → deploy.
+1. ~~**Automated tests** — API suite done (Vitest + Supertest, 27 tests).~~ Next: frontend unit
+   tests (React Testing Library) and Cypress/Playwright E2E for the key customer journeys.
+2. ~~**CI/CD pipeline** — workflow in `.github/workflows/ci.yml` (typecheck → tests → build).~~
+   Next: wire the secrets on your repo and add Docker build + deploy on merge.
 3. **Production integrations** — real SMS gateway, SMTP, Cloudinary uploads, FCM push notifications,
    real Razorpay checkout (native SDK instead of the mock), Redis caching, Sentry.
 4. **App polish** — push-to-refresh in the WebView, offline fallback screen, real device testing

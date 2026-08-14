@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  typecheck-and-build:
+    name: Typecheck + Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck (api, web, admin)
+        run: npm run typecheck
+
+      - name: Build (api, web, admin)
+        run: npm run build
+
+  api-tests:
+    name: API tests
+    runs-on: ubuntu-latest
+    # Requires the DATABASE_URL + JWT_SECRET secrets (a Neon branch works well).
+    # Skipped automatically when the secrets are not configured (e.g. fork PRs).
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      JWT_SECRET: ${{ secrets.JWT_SECRET }}
+      OTP_DEBUG: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run API test suite
+        if: env.DATABASE_URL != '' && env.JWT_SECRET != ''
+        run: npm test

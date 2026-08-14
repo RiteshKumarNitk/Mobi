@@ -33,9 +33,17 @@ powershell -NoProfile -Command "(Start-Process -FilePath 'npm.cmd' -ArgumentList
 
 - **API test suite** (Vitest + Supertest against the live DB; self-cleaning): `npm test` (repo root) or `cd apps/api && npx vitest run`. Covers auth/OTP, admin access gates, case-insensitive search, bulk (box) pricing at cart + order time, the order status state machine, returns → approve → refund, and coupon math.
 - **Smoke test** (requires the API running): `bash apps/api/scripts/smoke.sh`.
+- **Load test** (requires k6): `cd apps/api && npx k6 run scripts/load-test.js` (add `-e API_URL=…` for a deployed API).
+- **API reference**: Swagger UI at `http://localhost:4000/api/docs` (spec at `/api/docs.json`, OpenAPI 3.0).
 - **Typecheck**: `npm run typecheck` (repo root).
 
-## 4. Notes
+## 4. Docker / CI (for deploy, not needed for the preview)
+
+- `docker-compose.yml` runs api (:4000) + web (:3000) + admin (:3001); requires `.env` with `DATABASE_URL` + `JWT_SECRET`. Local Postgres for offline dev: `docker compose --profile localdb up -d db`.
+- Images are built from `apps/*/Dockerfile` (multi-stage; API runs `prisma generate`; web/admin bake `NEXT_PUBLIC_API_URL` via build arg). **Not build-verified on this machine** — no Docker CLI here.
+- CI: `.github/workflows/ci.yml` — typecheck + build always; API tests when `DATABASE_URL`/`JWT_SECRET` secrets are configured.
+
+## 5. Notes
 
 - **Caching**: catalog reads are served from an in-memory TTL cache (`X-Cache: HIT/MISS`);
   admin writes invalidate it automatically. `NODE_ENV=production` refuses to boot with the

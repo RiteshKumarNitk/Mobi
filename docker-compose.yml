@@ -1,14 +1,84 @@
-# Production-like local setup: PostgreSQL for the Baba Communication platform.
-# Start with: docker compose up -d
-# Then set DATABASE_URL in apps/api/.env to:
-#   postgresql://baba:baba@localhost:5432/baba?schema=public
-# and switch prisma/schema.prisma provider to "postgresql".
+# Baba Communication platform — production-like local stack.
+#
+#   docker compose up -d --build
+#
+# Required env (create a `.env` next to this file — see README):
+#   DATABASE_URL   your Neon (or any Postgres) connection string
+#   JWT_SECRET     a long random string
+#
+# Optional env:
+#   WEB_API_URL    public API base baked into the storefront (default http://localhost:4000/api)
+#   ADMIN_API_URL  public API base baked into the admin panel (default http://localhost:4000/api)
+#   CORS_ORIGINS   comma-separated allowed origins (default *)
+#   OTP_DEBUG      true to return OTP codes in API responses (dev only)
+#   RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET   for live payments
+#
+# Local PostgreSQL for offline development (instead of Neon):
+#   docker compose --profile localdb up -d db
+#   DATABASE_URL=postgresql://baba:baba@localhost:5432/baba?schema=public
+#   npx prisma db push --schema apps/api/prisma/schema.prisma && npm run db:seed
 
 services:
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    image: baba-api:latest
+    restart: unless-stopped
+    ports:
+      - "4000:4000"
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env}
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-1h}
+      JWT_REFRESH_EXPIRES_IN: ${JWT_REFRESH_EXPIRES_IN:-30d}
+      OTP_DEBUG: ${OTP_DEBUG:-false}
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+      RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID:-}
+      RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET:-}
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:4000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${WEB_API_URL:-http://localhost:4000/api}
+    image: baba-web:latest
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+
+  admin:
+    build:
+      context: .
+      dockerfile: apps/admin/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${ADMIN_API_URL:-http://localhost:4000/api}
+    image: baba-admin:latest
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    depends_on:
+      api:
+        condition: service_healthy
+
+  # Optional: local Postgres for offline development. Enable with --profile localdb.
   db:
     image: postgres:16-alpine
     container_name: baba-postgres
     restart: unless-stopped
+    profiles: ["localdb"]
     environment:
       POSTGRES_USER: baba
       POSTGRES_PASSWORD: baba
