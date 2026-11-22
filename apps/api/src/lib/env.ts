@@ -28,6 +28,13 @@ function trustProxy(value: string | undefined): boolean | number | string {
 
 const isProd = process.env.NODE_ENV === "production";
 
+/**
+ * DEMO_MODE=true — for a public client-review deployment running on demo data.
+ * Allows the published demo logins and shows OTPs on screen (no SMS gateway).
+ * Payments stay disabled (Cash on Delivery only). Never enable on a live store.
+ */
+const demoMode = (process.env.DEMO_MODE ?? "").toLowerCase() === "true";
+
 export const DEFAULT_JWT_SECRET = "insecure-dev-secret-change-me";
 /** Values copied from .env.example / docs that must never be used for real. */
 const KNOWN_PLACEHOLDER_SECRETS = [DEFAULT_JWT_SECRET, "change-me-to-a-long-random-string", "changeme", "secret"];
@@ -40,7 +47,8 @@ export const env = {
   jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? "1h",
   jwtRefreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN ?? "30d",
   // Debug OTPs are hard-disabled in production, whatever the env says.
-  otpDebug: isProd ? false : bool(process.env.OTP_DEBUG, true),
+  otpDebug: demoMode ? true : isProd ? false : bool(process.env.OTP_DEBUG, true),
+  demoMode,
   otpDebugRequested: bool(process.env.OTP_DEBUG, false),
   razorpayKeyId: process.env.RAZORPAY_KEY_ID ?? "",
   razorpayKeySecret: process.env.RAZORPAY_KEY_SECRET ?? "",
@@ -76,7 +84,8 @@ export function productionConfigErrors(e = env): string[] {
 export function productionConfigWarnings(e = env): string[] {
   if (!e.isProd) return [];
   const warnings: string[] = [];
-  if (e.otpDebugRequested) warnings.push("OTP_DEBUG=true is ignored in production; OTPs are never returned in responses.");
+  if (e.demoMode) warnings.push("DEMO_MODE=true: demo logins allowed and OTPs shown on screen. For client review only — never for a live store.");
+  if (e.otpDebugRequested && !e.demoMode) warnings.push("OTP_DEBUG=true is ignored in production; OTPs are never returned in responses.");
   if (!e.razorpayKeyId) warnings.push("Razorpay keys are not configured: online payments are DISABLED (COD only).");
   if (e.razorpayKeyId && !e.razorpayWebhookSecret) {
     warnings.push("RAZORPAY_WEBHOOK_SECRET is not set: payments captured after an interrupted checkout will not reconcile automatically.");

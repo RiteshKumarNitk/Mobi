@@ -18,7 +18,7 @@ export const authRouter = Router();
 
 const phoneSchema = z.string().regex(/^[0-9]{10,15}$/, "Enter a valid phone number");
 const newPasswordSchema = z.string().superRefine((pw, ctx) => {
-  const err = passwordPolicyError(pw, { forbidDemo: env.isProd });
+  const err = passwordPolicyError(pw, { forbidDemo: env.isProd && !env.demoMode });
   if (err) ctx.addIssue({ code: z.ZodIssueCode.custom, message: err });
 });
 
@@ -88,7 +88,7 @@ authRouter.post(
     const user = await prisma.user.findUnique({ where: { phone } });
     const ok = await checkPassword(password, user?.passwordHash ?? DUMMY_HASH);
     if (!user || !ok) throw Unauthorized("Invalid phone number or password");
-    if (env.isProd && isDemoPassword(password)) {
+    if (env.isProd && !env.demoMode && isDemoPassword(password)) {
       throw new ApiError(403, "This account uses a publicly known demo password and is locked. Reset the password to continue.", "PASSWORD_RESET_REQUIRED");
     }
     if (user.status === "inactive") throw Forbidden("Your account has been deactivated. Contact support.");

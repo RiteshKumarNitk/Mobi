@@ -21,5 +21,8 @@ export async function fetchPublic<T>(path: string, revalidateSeconds = 300): Pro
   }
 }
 
+/** Client-review deployment on sample data: show a banner and keep search engines out. */
+export const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE === "true";
+
 /** Private, per-user pages that must never be indexed. */
 export const NOINDEX = { robots: { index: false, follow: false } } as const;

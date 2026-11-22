@@ -6,7 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { api, safeNext } from "@/lib/api";
 import { useStore } from "@/lib/store";
 
-const SHOW_DEMO_HINT = process.env.NODE_ENV !== "production";
+const SHOW_DEMO_HINT = process.env.NODE_ENV !== "production" || process.env.NEXT_PUBLIC_DEMO_MODE === "true";
 
 export default function LoginPage() {
   return (
@@ -125,7 +125,7 @@ function LoginInner() {
           New customer? <Link href="/register">Create an account</Link>
         </div>
       </div>
-      {SHOW_DEMO_HINT && <div className="center small muted mt-16">Demo account (dev only): 8888888888 / Customer@123</div>}
+      {SHOW_DEMO_HINT && <div className="center small muted mt-16">Demo customer login: 8888888888 / Customer@123</div>}
     </div>
   );
 }

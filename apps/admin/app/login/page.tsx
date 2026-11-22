@@ -85,7 +85,9 @@ export default function AdminLogin() {
               {busy ? "Logging in…" : "Login"}
             </button>
           </form>
-          <div className="center small muted mt-16">Demo: 9999999999 / Admin@123</div>
+          {(process.env.NODE_ENV !== "production" || process.env.NEXT_PUBLIC_DEMO_MODE === "true") && (
+            <div className="center small muted mt-16">Demo admin login: 9999999999 / Admin@123</div>
+          )}
         </div>
       </div>
     </div>

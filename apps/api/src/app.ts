@@ -61,7 +61,13 @@ export function createApp() {
   });
 
   app.use(helmet({ contentSecurityPolicy: false, crossOriginResourcePolicy: { policy: "cross-origin" } }));
-  const origins = env.corsOrigins.split(",").map((s) => s.trim()).filter(Boolean);
+  // Entries may contain "*" as a wildcard inside a hostname (e.g.
+  // https://mobi-*.vercel.app for Vercel preview URLs). A bare "*" allows all (dev only).
+  const origins = env.corsOrigins
+    .split(",")
+    .map((s) => s.trim().replace(/\/$/, ""))
+    .filter(Boolean)
+    .map((o) => (o.includes("*") ? new RegExp(`^${o.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[a-z0-9-]+")}$`, "i") : o));
   app.use(
     cors({
       // Auth uses Bearer tokens (no cookies), so credentialed CORS is not needed.

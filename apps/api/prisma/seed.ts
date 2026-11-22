@@ -211,15 +211,23 @@ async function main() {
     const mrp = Math.round(def.price * 1.35);
     const isNew = def.isNew ?? (newArrival++ < 6);
     const isFeatured = def.feat ?? (featured++ < 10);
-    const sku = `SKU-${def.brand.toUpperCase().slice(0, 3)}-${String(def.price).padStart(4, "0")}-${Math.floor(Math.random() * 900 + 100)}`;
     const boxPrice = Math.round((def.price * 0.88) / 5) * 5;
+    // Idempotent: products are matched by name (SKUs of earlier seeds were random),
+    // and new SKUs/slugs are deterministic so re-running never duplicates the catalogue.
+    const existing = await prisma.product.findFirst({ where: { name: def.name }, orderBy: { createdAt: "asc" } });
+    if (existing) {
+      await prisma.product.update({ where: { id: existing.id }, data: { boxPrice, boxQuantity: 10, hsnCode: HSN[def.cat] ?? "8517" } });
+      continue;
+    }
+    const nameKey = [...def.name].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) % 900, 7) + 100;
+    const sku = `SKU-${def.brand.toUpperCase().slice(0, 3)}-${String(def.price).padStart(4, "0")}-${nameKey}`;
     await prisma.product.upsert({
       where: { sku },
       update: { boxPrice, boxQuantity: 10, hsnCode: HSN[def.cat] ?? "8517" },
       create: {
         name: def.name,
         sku,
-        slug: `${def.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${Math.floor(Math.random() * 1000)}`,
+        slug: `${def.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${nameKey}`,
         categoryId: categoryIds[def.cat],
         brandId: brandIds[def.brand],
         price: def.price,
@@ -270,7 +278,12 @@ async function main() {
   for (const [code, type, value, min, maxDisc, perUser, description] of couponDefs) {
     await prisma.coupon.upsert({
       where: { code },
-      update: {},
+      // Re-seeding refreshes the validity window so demo coupons never sit expired.
+      update: {
+        status: "active",
+        startDate: new Date(now.getTime() - 24 * 3600 * 1000),
+        endDate: new Date(now.getTime() + 90 * 24 * 3600 * 1000),
+      },
       create: {
         code, type, value, minOrderAmount: min, maxDiscountAmount: maxDisc, perUserLimit: perUser,
         description, status: "active",
