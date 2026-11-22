@@ -76,6 +76,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # The schema lives in apps/api, so @prisma/client's postinstall can't find it — generate explicitly.
+      - name: Generate Prisma client
+        run: npx prisma generate --schema apps/api/prisma/schema.prisma
+
       - name: Apply migrations (same path as production)
         run: npx prisma migrate deploy --schema apps/api/prisma/schema.prisma
 
