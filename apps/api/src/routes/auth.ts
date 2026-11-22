@@ -1,35 +1,43 @@
 import { Router } from "express";
-import bcrypt from "bcryptjs";
 import { z } from "zod";
 import { prisma } from "../lib/prisma";
 import { asyncH } from "../lib/async";
 import { ApiError, BadRequest, Conflict, Forbidden, NotFound, Unauthorized } from "../lib/errors";
 import { verifyToken } from "../lib/jwt";
-import { issueTokens, revokeUserTokens } from "../lib/tokens";
-import { sendOtp, verifyOtp } from "../lib/otp";
+import { consumeRefreshToken, issueTokens, revokeUserTokens } from "../lib/tokens";
+import { OTP_TTL_SECONDS, sendOtp, verifyOtp } from "../lib/otp";
 import { publicUser } from "../lib/helpers";
 import { authRequired } from "../middleware/auth";
 import { validate } from "../middleware/validate";
 import { rateLimit } from "../lib/rateLimit";
 import { sendEmail } from "../lib/mailer";
+import { env } from "../lib/env";
+import { checkPassword, hashPassword, isDemoPassword, passwordPolicyError } from "../lib/passwords";
 
 export const authRouter = Router();
 
 const phoneSchema = z.string().regex(/^[0-9]{10,15}$/, "Enter a valid phone number");
+const newPasswordSchema = z.string().superRefine((pw, ctx) => {
+  const err = passwordPolicyError(pw, { forbidDemo: env.isProd });
+  if (err) ctx.addIssue({ code: z.ZodIssueCode.custom, message: err });
+});
 
 const registerSchema = z.object({
   phone: phoneSchema,
-  password: z.string().min(6, "Password must be at least 6 characters"),
-  name: z.string().min(2, "Name is required"),
-  email: z.string().email().optional().or(z.literal("")),
-  shopName: z.string().optional(),
-  gstNumber: z.string().optional(),
+  password: newPasswordSchema,
+  name: z.string().trim().min(2, "Name is required").max(100),
+  email: z.string().email().max(200).optional().or(z.literal("")),
+  shopName: z.string().max(200).optional(),
+  gstNumber: z.string().max(20).optional(),
 });
 
 const loginSchema = z.object({
   phone: phoneSchema,
-  password: z.string().min(1),
+  password: z.string().min(1).max(128),
 });
+
+// Compared against when the phone is unknown, so login timing does not reveal which numbers are registered.
+const DUMMY_HASH = "$2a$12$CwTycUXWue0Thq9StjUM0uJ8.5G0aV9E3O1s3Wc3vZ2s0sQzPq3e2";
 
 // POST /api/auth/register - create account, then OTP verifies the phone
 authRouter.post(
@@ -38,27 +46,33 @@ authRouter.post(
   rateLimit({ max: 10, keyFrom: (req: any) => req.body?.phone }),
   asyncH(async (req, res) => {
     const { phone, password, name, email, shopName, gstNumber } = req.body;
-    const existing = await prisma.user.findUnique({ where: { phone } });
-    if (existing) throw Conflict("An account with this phone number already exists. Please login.");
     const [first, ...rest] = name.trim().split(/\s+/);
-    const passwordHash = await bcrypt.hash(password, 10);
-    const user = await prisma.user.create({
-      data: {
-        phone,
-        passwordHash,
-        firstName: first,
-        lastName: rest.join(" ") || null,
-        email: email || null,
-        shopName: shopName || null,
-        gstNumber: gstNumber || null,
-        phoneVerified: false,
-        settings: { create: {} },
-      },
-    });
+    const profile = {
+      passwordHash: await hashPassword(password),
+      firstName: first,
+      lastName: rest.join(" ") || null,
+      email: email || null,
+      shopName: shopName || null,
+      gstNumber: gstNumber || null,
+    };
+    const existing = await prisma.user.findUnique({ where: { phone } });
+    let user;
+    if (existing) {
+      // A verified number is taken. An *unverified* registration proves nothing about
+      // ownership, so the real owner may re-register over it (prevents number squatting).
+      if (existing.phoneVerified || existing.role !== "customer") {
+        throw Conflict("An account with this phone number already exists. Please login.");
+      }
+      user = await prisma.user.update({ where: { id: existing.id }, data: profile });
+    } else {
+      user = await prisma.user.create({
+        data: { phone, ...profile, phoneVerified: false, status: "pending", settings: { create: {} } },
+      });
+    }
     const debugCode = await sendOtp(phone, "register");
     res.json({
       success: true,
-      data: { user: publicUser(user), otpSent: true, expiresIn: 300, debugCode: debugCode ?? null, message: "OTP sent to your phone. Verify to activate your account." },
+      data: { user: publicUser(user), otpSent: true, expiresIn: OTP_TTL_SECONDS, debugCode: debugCode ?? null, message: "OTP sent to your phone. Verify to activate your account." },
     });
   })
 );
@@ -67,31 +81,35 @@ authRouter.post(
 authRouter.post(
   "/login",
   validate(loginSchema),
-  rateLimit({ max: 20 }),
+  rateLimit({ max: 10, keyFrom: (req: any) => req.body?.phone }),
+  rateLimit({ max: 30 }),
   asyncH(async (req, res) => {
     const { phone, password } = req.body;
     const user = await prisma.user.findUnique({ where: { phone } });
-    if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
-      throw Unauthorized("Invalid phone number or password");
+    const ok = await checkPassword(password, user?.passwordHash ?? DUMMY_HASH);
+    if (!user || !ok) throw Unauthorized("Invalid phone number or password");
+    if (env.isProd && isDemoPassword(password)) {
+      throw new ApiError(403, "This account uses a publicly known demo password and is locked. Reset the password to continue.", "PASSWORD_RESET_REQUIRED");
     }
     if (user.status === "inactive") throw Forbidden("Your account has been deactivated. Contact support.");
-    if (user.status === "pending") throw new ApiError(403, "Your account is pending approval.", "PENDING");
     if (!user.phoneVerified) {
-      await sendOtp(phone, "login");
-      throw new ApiError(403, "Phone not verified. OTP sent to your number.", "OTP_REQUIRED");
+      // The client requests the OTP itself via POST /api/otp/send (purpose "register").
+      throw new ApiError(403, "Phone not verified. Verify your number with an OTP to continue.", "OTP_REQUIRED");
     }
+    if (user.status === "pending") throw new ApiError(403, "Your account is pending approval.", "PENDING");
     await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
     const tokens = await issueTokens(user.id);
     res.json({ success: true, data: { user: publicUser(user), ...tokens } });
   })
 );
 
-// POST /api/auth/refresh
+// POST /api/auth/refresh - rotate: the presented refresh token is consumed and a new pair issued
 authRouter.post(
   "/refresh",
+  rateLimit({ max: 30 }),
   asyncH(async (req, res) => {
     const { refreshToken } = req.body ?? {};
-    if (!refreshToken) throw Unauthorized("Refresh token required");
+    if (!refreshToken || typeof refreshToken !== "string") throw Unauthorized("Refresh token required");
     let payload;
     try {
       payload = verifyToken(refreshToken);
@@ -99,17 +117,19 @@ authRouter.post(
       throw Unauthorized("Invalid refresh token");
     }
     if (payload.type !== "refresh") throw Unauthorized("Invalid token type");
-    const stored = await prisma.refreshToken.findUnique({ where: { token: refreshToken } });
-    if (!stored || stored.revoked || stored.expiresAt < new Date()) {
+    const stored = await prisma.refreshToken.findUnique({ where: { token: refreshToken }, include: { user: { select: { status: true } } } });
+    if (!stored || stored.expiresAt < new Date()) throw Unauthorized("Refresh token expired or revoked");
+    if (stored.revoked || !(await consumeRefreshToken(stored.id, stored.userId))) {
+      if (stored.revoked) await revokeUserTokens(stored.userId); // replay of a used token
       throw Unauthorized("Refresh token expired or revoked");
     }
-    await prisma.refreshToken.update({ where: { id: stored.id }, data: { revoked: true } });
+    if (stored.user.status !== "active") throw Unauthorized("Your account is not active");
     const tokens = await issueTokens(stored.userId);
     res.json({ success: true, data: tokens });
   })
 );
 
-// POST /api/auth/logout
+// POST /api/auth/logout - revokes every refresh token of the user (all devices)
 authRouter.post(
   "/logout",
   authRequired,
@@ -133,38 +153,60 @@ authRouter.get(
   })
 );
 
-// POST /api/auth/forgot-password - sends password-reset OTP
+// POST /api/auth/change-password - signed-in user changes their own password
+authRouter.post(
+  "/change-password",
+  authRequired,
+  rateLimit({ max: 10 }),
+  validate(z.object({ currentPassword: z.string().min(1).max(128), newPassword: newPasswordSchema })),
+  asyncH(async (req, res) => {
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: (req as any).user.id } });
+    if (!(await checkPassword(req.body.currentPassword, user.passwordHash))) throw BadRequest("Current password is incorrect", "WRONG_PASSWORD");
+    await prisma.user.update({ where: { id: user.id }, data: { passwordHash: await hashPassword(req.body.newPassword) } });
+    await revokeUserTokens(user.id);
+    const tokens = await issueTokens(user.id);
+    res.json({ success: true, data: { message: "Password changed. Other devices have been signed out.", ...tokens } });
+  })
+);
+
+// POST /api/auth/forgot-password - sends a password-reset OTP.
+// The response is identical whether or not the number is registered (no account enumeration).
 authRouter.post(
   "/forgot-password",
   validate(z.object({ phone: phoneSchema })),
-  rateLimit({ max: 10, keyFrom: (req: any) => req.body?.phone }),
+  rateLimit({ max: 5, keyFrom: (req: any) => req.body?.phone }),
   asyncH(async (req, res) => {
     const { phone } = req.body;
     const user = await prisma.user.findUnique({ where: { phone } });
-    if (!user) throw NotFound("No account found with this phone number");
-    await sendOtp(phone, "password_reset");
-    res.json({ success: true, data: { otpSent: true, expiresIn: 300 } });
+    const debugCode = user && user.status !== "inactive" ? await sendOtp(phone, "password_reset") : undefined;
+    res.json({
+      success: true,
+      data: { otpSent: true, expiresIn: OTP_TTL_SECONDS, debugCode: debugCode ?? null, message: "If an account exists for this number, an OTP has been sent." },
+    });
   })
 );
 
 // POST /api/auth/reset-password
 authRouter.post(
   "/reset-password",
-  validate(z.object({ phone: phoneSchema, code: z.string().length(6), newPassword: z.string().min(6) })),
+  validate(z.object({ phone: phoneSchema, code: z.string().regex(/^[0-9]{6}$/, "OTP must be 6 digits"), newPassword: newPasswordSchema })),
+  rateLimit({ max: 10, keyFrom: (req: any) => req.body?.phone }),
   asyncH(async (req, res) => {
     const { phone, code, newPassword } = req.body;
     await verifyOtp(phone, "password_reset", code);
-    const user = await prisma.user.findUniqueOrThrow({ where: { phone } });
-    await prisma.user.update({ where: { id: user.id }, data: { passwordHash: await bcrypt.hash(newPassword, 10) } });
+    const user = await prisma.user.findUnique({ where: { phone } });
+    if (!user) throw BadRequest("Invalid OTP", "OTP_INVALID");
+    await prisma.user.update({ where: { id: user.id }, data: { passwordHash: await hashPassword(newPassword) } });
     await revokeUserTokens(user.id);
-    await sendEmail({
-      to: user.email ?? "",
-      subject: "Your password was changed",
-      html: `<p>Hi ${user.firstName ?? "there"},</p><p>Your Baba Communication account password was changed successfully.</p>`,
-    });
+    if (user.email) {
+      await sendEmail({
+        to: user.email,
+        subject: "Your password was changed",
+        html: `<p>Your Baba Communication account password was changed successfully.</p>`,
+      });
+    }
     res.json({ success: true, data: { message: "Password updated. Please login with your new password." } });
   })
 );
 
-// POST /api/auth/verify-otp - convenience alias for /api/otp/verify
 export { phoneSchema };

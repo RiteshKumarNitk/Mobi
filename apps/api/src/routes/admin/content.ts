@@ -8,8 +8,12 @@ import { cacheBustAll } from "../../lib/cache";
 import { adminRequired, can } from "../../middleware/auth";
 import { validate } from "../../middleware/validate";
 import { logActivity } from "../../lib/activity";
+import { sanitizeRichText } from "../../lib/sanitize";
 
 export const adminContentRouter = Router();
+
+/** Rich text is sanitized on write (scripts, handlers, javascript: links removed). */
+const richText = z.string().max(200_000).transform((html) => sanitizeRichText(html) ?? "");
 
 adminContentRouter.use(adminRequired);
 
@@ -40,7 +44,15 @@ adminContentRouter.get(
 adminContentRouter.put(
   "/pages/:slug",
   can("content.edit"),
-  validate(z.object({ title: z.string().min(2), content: z.string().optional(), metaTitle: z.string().optional(), metaDescription: z.string().optional(), status: z.string().optional() })),
+  validate(
+    z.object({
+      title: z.string().trim().min(2).max(200),
+      content: richText.optional(),
+      metaTitle: z.string().max(200).optional(),
+      metaDescription: z.string().max(500).optional(),
+      status: z.enum(["draft", "published"]).optional(),
+    })
+  ),
   asyncH(async (req, res) => {
     const page = await prisma.page.upsert({
       where: { slug: req.params.slug },
@@ -117,16 +129,16 @@ adminContentRouter.delete(
 // ---------------------------------------------------------------------------
 
 const blogSchema = z.object({
-  title: z.string().min(3),
-  slug: z.string().optional(),
-  content: z.string().optional(),
-  excerpt: z.string().optional(),
-  category: z.string().optional(),
-  featuredImage: z.string().optional(),
-  tags: z.array(z.string()).optional(),
+  title: z.string().trim().min(3).max(200),
+  slug: z.string().trim().max(150).regex(/^[a-z0-9-]*$/, "Slug may contain lowercase letters, digits and dashes").optional(),
+  content: richText.optional(),
+  excerpt: z.string().max(1000).optional(),
+  category: z.string().max(100).optional(),
+  featuredImage: z.string().trim().url().max(1000).refine((s) => /^https?:\/\//i.test(s), "Must be an http(s) URL").optional().or(z.literal("")),
+  tags: z.array(z.string().trim().min(1).max(50)).max(30).optional(),
   status: z.enum(["draft", "published"]).optional(),
-  metaTitle: z.string().optional(),
-  metaDescription: z.string().optional(),
+  metaTitle: z.string().max(200).optional(),
+  metaDescription: z.string().max(500).optional(),
 });
 
 adminContentRouter.get(

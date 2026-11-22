@@ -7,26 +7,82 @@ import { effectiveUnitPrice, round2 } from "../lib/helpers";
 import { validate } from "../middleware/validate";
 import { validateCoupon } from "../lib/coupons";
 import { shippingChargeFor } from "../lib/settings";
+import { optionalAuth } from "../middleware/auth";
 
 export const cartRouter = Router();
+
+const MAX_LINE_QTY = 9999;
+
+function deviceIdOf(req: any): string | null {
+  const raw = req.headers["x-device-id"];
+  // Device ids are client-generated UUIDs; reject anything else (keys a DB lookup).
+  return typeof raw === "string" && /^[A-Za-z0-9-]{8,64}$/.test(raw) ? raw : null;
+}
 
 function ownerOf(req: any): { userId: string } | { deviceId: string } | null {
   const userId = req.user?.id;
   if (userId) return { userId };
-  const deviceId = req.headers["x-device-id"];
-  if (deviceId) return { deviceId: String(deviceId) };
+  const deviceId = deviceIdOf(req);
+  if (deviceId) return { deviceId };
   return null;
+}
+
+/**
+ * When a signed-in request still carries the guest device id, move the guest
+ * cart into the account cart (quantities are added) so items picked before
+ * login are not lost — and so checkout, which reads the account cart, sees them.
+ */
+async function mergeGuestCart(req: any) {
+  const userId = req.user?.id;
+  const deviceId = deviceIdOf(req);
+  if (!userId || !deviceId) return;
+  // Cheap pre-check outside the transaction: nothing to merge on most requests.
+  const pending = await prisma.cartItem.count({ where: { deviceId } });
+  const guestSession0 = await prisma.cartSession.findUnique({ where: { deviceId }, select: { id: true } });
+  if (!pending && !guestSession0) return;
+  await prisma.$transaction(async (tx) => {
+    // Serialize merges per user: the storefront fires several cart requests at
+    // login, and two concurrent merges of the same rows would double-count or
+    // delete items. Rows are re-read after taking the lock.
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${"cart:" + userId}))`;
+    const guestItems = await tx.cartItem.findMany({ where: { deviceId } });
+    for (const g of guestItems) {
+      const existing = await tx.cartItem.findFirst({ where: { userId, productId: g.productId, id: { not: g.id } } });
+      if (existing) {
+        await tx.cartItem.update({
+          where: { id: existing.id },
+          data: { quantity: Math.min(MAX_LINE_QTY, existing.quantity + g.quantity), isSavedForLater: existing.isSavedForLater && g.isSavedForLater },
+        });
+        await tx.cartItem.deleteMany({ where: { id: g.id, deviceId } });
+      } else {
+        await tx.cartItem.updateMany({ where: { id: g.id, deviceId }, data: { userId, deviceId: null } });
+      }
+    }
+    const guestSession = await tx.cartSession.findUnique({ where: { deviceId } });
+    if (guestSession) {
+      if (guestSession.couponId) {
+        await tx.cartSession.upsert({ where: { userId }, update: { couponId: guestSession.couponId }, create: { userId, couponId: guestSession.couponId } });
+      }
+      await tx.cartSession.deleteMany({ where: { id: guestSession.id } });
+    }
+  });
 }
 
 async function getSession(req: any) {
   const owner = ownerOf(req);
   if (!owner) return null;
-  let session = await prisma.cartSession.findUnique({ where: owner, include: { coupon: true } });
-  if (!session) {
-    session = await prisma.cartSession.create({ data: owner, include: { coupon: true } });
+  try {
+    return await prisma.cartSession.upsert({ where: owner, update: {}, create: owner, include: { coupon: true } });
+  } catch (e: any) {
+    // Two concurrent first requests can race on the unique owner key; the row exists now.
+    if (e?.code === "P2002") return prisma.cartSession.findUnique({ where: owner, include: { coupon: true } });
+    throw e;
   }
-  return session;
 }
+
+cartRouter.use(optionalAuth, (req, _res, next) => {
+  mergeGuestCart(req).then(() => next(), next);
+});
 
 async function cartSubtotal(req: any): Promise<number> {
   const owner = ownerOf(req);
@@ -128,7 +184,7 @@ cartRouter.get(
 // POST /api/cart/add
 cartRouter.post(
   "/add",
-  validate(z.object({ productId: z.string().uuid(), quantity: z.number().int().min(1).max(99).default(1) })),
+  validate(z.object({ productId: z.string().uuid(), quantity: z.number().int().min(1).max(MAX_LINE_QTY).default(1) })),
   asyncH(async (req, res) => {
     const { productId, quantity } = req.body;
     const owner = ownerOf(req);
@@ -140,7 +196,7 @@ cartRouter.post(
     if (existing) {
       await prisma.cartItem.update({
         where: { id: existing.id },
-        data: { quantity: Math.min(99, existing.quantity + quantity), isSavedForLater: false },
+        data: { quantity: Math.min(MAX_LINE_QTY, existing.quantity + quantity), isSavedForLater: false },
       });
     } else {
       await prisma.cartItem.create({ data: { ...owner, productId, quantity } });
@@ -153,7 +209,7 @@ cartRouter.post(
 // PUT /api/cart/update
 cartRouter.put(
   "/update",
-  validate(z.object({ itemId: z.string().uuid(), quantity: z.number().int().min(0).max(99) })),
+  validate(z.object({ itemId: z.string().uuid(), quantity: z.number().int().min(0).max(MAX_LINE_QTY) })),
   asyncH(async (req, res) => {
     const { itemId, quantity } = req.body;
     const owner = ownerOf(req);
@@ -202,7 +258,7 @@ cartRouter.post(
 // POST /api/cart/apply-coupon
 cartRouter.post(
   "/apply-coupon",
-  validate(z.object({ code: z.string().min(1) })),
+  validate(z.object({ code: z.string().trim().min(1).max(50) })),
   asyncH(async (req, res) => {
     const session = await getSession(req);
     if (!session) throw Unauthorized("Login or provide an x-device-id header");
@@ -229,7 +285,7 @@ cartRouter.delete(
 // POST /api/cart/quick-add - bulk add by SKU (one per line, optional "SKU xQty" or "SKU Qty")
 cartRouter.post(
   "/quick-add",
-  validate(z.object({ lines: z.array(z.object({ sku: z.string().min(1), quantity: z.number().int().min(1).max(99).default(1) })).min(1).max(100) })),
+  validate(z.object({ lines: z.array(z.object({ sku: z.string().min(1), quantity: z.number().int().min(1).max(MAX_LINE_QTY).default(1) })).min(1).max(100) })),
   asyncH(async (req, res) => {
     const owner = ownerOf(req);
     if (!owner) throw Unauthorized("Login or provide an x-device-id header to use the cart");
@@ -260,7 +316,7 @@ cartRouter.post(
       if (existing) {
         await prisma.cartItem.update({
           where: { id: existing.id },
-          data: { quantity: Math.min(99, existing.quantity + line.quantity), isSavedForLater: false },
+          data: { quantity: Math.min(MAX_LINE_QTY, existing.quantity + line.quantity), isSavedForLater: false },
         });
       } else {
         await prisma.cartItem.create({ data: { ...owner, productId: p.id, quantity: line.quantity } });

@@ -29,3 +29,10 @@ npm-debug.log*
 .DS_Store
 *.tsbuildinfo
 next-env.d.ts
+
+# local tool state (not project files)
+.freebuff/
+
+# Playwright
+test-results/
+playwright-report/

@@ -17,9 +17,9 @@ returnsRouter.post(
   validate(
     z.object({
       orderId: z.string().uuid(),
-      reason: z.string().min(3, "Please select a reason"),
-      description: z.string().optional(),
-      items: z.array(z.object({ orderItemId: z.string().uuid(), quantity: z.number().int().min(1) })).min(1),
+      reason: z.string().trim().min(3, "Please select a reason").max(200),
+      description: z.string().max(2000).optional(),
+      items: z.array(z.object({ orderItemId: z.string().uuid(), quantity: z.number().int().min(1).max(10000) })).min(1).max(200),
     })
   ),
   asyncH(async (req, res) => {
@@ -33,9 +33,29 @@ returnsRouter.post(
       throw BadRequest("Returns are allowed only for delivered orders");
     }
     const existing = await prisma.returnRequest.findFirst({
-      where: { orderId: order.id, status: { in: ["pending", "approved", "processed"] } },
+      where: { orderId: order.id, status: { in: ["pending", "approved"] } },
     });
-    if (existing) throw Conflict("A return request already exists for this order");
+    if (existing) throw Conflict("A return request is already open for this order");
+
+    // Every returned line must be an item of THIS order, and the quantity may not
+    // exceed what was bought minus what earlier (non-rejected) returns already cover.
+    const itemsById = new Map(order.items.map((i) => [i.id, i]));
+    const previously = await prisma.returnItem.groupBy({
+      by: ["orderItemId"],
+      where: { returnRequest: { orderId: order.id, status: { not: "rejected" } } },
+      _sum: { quantity: true },
+    });
+    const alreadyReturned = new Map(previously.map((p) => [p.orderItemId, p._sum.quantity ?? 0]));
+    const requested = new Map<string, number>();
+    for (const i of req.body.items as { orderItemId: string; quantity: number }[]) {
+      requested.set(i.orderItemId, (requested.get(i.orderItemId) ?? 0) + i.quantity);
+    }
+    for (const [orderItemId, qty] of requested) {
+      const item = itemsById.get(orderItemId);
+      if (!item) throw BadRequest("Return items must belong to this order", "RETURN_ITEM_INVALID");
+      const left = item.quantity - (alreadyReturned.get(orderItemId) ?? 0);
+      if (qty > left) throw BadRequest(`You can return at most ${Math.max(0, left)} of "${item.productName}"`, "RETURN_QTY_EXCEEDED");
+    }
 
     const returnNumber = genReturnNumber();
     const returnReq = await prisma.returnRequest.create({
@@ -45,7 +65,7 @@ returnsRouter.post(
         returnNumber,
         reason: req.body.reason,
         description: req.body.description ?? null,
-        items: { create: req.body.items.map((i: any) => ({ orderItemId: i.orderItemId, quantity: i.quantity })) },
+        items: { create: [...requested.entries()].map(([orderItemId, quantity]) => ({ orderItemId, quantity })) },
       },
     });
     await prisma.notification.create({

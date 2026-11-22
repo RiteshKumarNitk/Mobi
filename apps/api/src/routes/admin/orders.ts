@@ -2,8 +2,10 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../../lib/prisma";
 import { asyncH } from "../../lib/async";
+import type { OrderStatus } from "@prisma/client";
 import { BadRequest, NotFound } from "../../lib/errors";
-import { paginate } from "../../lib/helpers";
+import { cancelOrder, transitionOrder } from "../../lib/orderOps";
+import { paginate, round2 } from "../../lib/helpers";
 import { adminRequired, can } from "../../middleware/auth";
 import { validate } from "../../middleware/validate";
 import { logActivity } from "../../lib/activity";
@@ -11,14 +13,13 @@ import { buildInvoice } from "../../lib/invoice";
 
 export const adminOrdersRouter = Router();
 
-const ORDER_FLOW: Record<string, string[]> = {
-  pending: ["processing", "cancelled"],
-  processing: ["packed", "cancelled"],
-  packed: ["shipped"],
-  shipped: ["delivered", "returned"],
-  delivered: ["returned"],
-  cancelled: [],
-  returned: [],
+/** Allowed return-request transitions (refunds go through POST /:id/refund). */
+const RETURN_FLOW: Record<string, string[]> = {
+  pending: ["approved", "rejected"],
+  approved: ["processed", "rejected"],
+  processed: ["completed"],
+  rejected: [],
+  completed: [],
 };
 
 // GET /api/admin/orders
@@ -106,38 +107,11 @@ adminOrdersRouter.put(
   asyncH(async (req, res) => {
     const order = await prisma.order.findUnique({ where: { id: req.params.id }, include: { items: true } });
     if (!order) throw NotFound("Order not found");
-    const next = req.body.status as string;
-    if (!ORDER_FLOW[order.status]?.includes(next)) {
-      throw BadRequest(`Cannot move order from "${order.status}" to "${next}"`);
-    }
+    const next = req.body.status as OrderStatus;
     const adminId = (req as any).user.id;
-
-    await prisma.$transaction(async (tx) => {
-      await tx.order.update({
-        where: { id: order.id },
-        data: { status: next as any, deliveredAt: next === "delivered" ? new Date() : order.deliveredAt },
-      });
-      await tx.orderStatusHistory.create({
-        data: { orderId: order.id, status: next as any, notes: req.body.notes ?? null, updatedBy: adminId },
-      });
-      if (next === "cancelled") {
-        for (const item of order.items) {
-          if (item.productId) {
-            await tx.product.update({ where: { id: item.productId }, data: { stockQuantity: { increment: item.quantity } } });
-          }
-        }
-        await tx.payment.updateMany({
-          where: { orderId: order.id },
-          data: { status: order.paymentStatus === "paid" ? "refunded" : "failed" },
-        });
-      }
-      if (next === "delivered") {
-        await tx.order.update({ where: { id: order.id }, data: { paymentStatus: "paid" } });
-        if (order.paymentMethod === "cod") {
-          await tx.payment.updateMany({ where: { orderId: order.id }, data: { status: "paid", completedAt: new Date() } });
-        }
-      }
-    });
+    // Validates the transition, applies it atomically (conditional on the current
+    // status), restores stock on cancel, and only marks COD orders paid on delivery.
+    await transitionOrder(order, next, { userId: adminId, note: req.body.notes ?? null });
 
     if (order.userId) {
       await prisma.notification.create({
@@ -163,20 +137,7 @@ adminOrdersRouter.post(
   asyncH(async (req, res) => {
     const order = await prisma.order.findUnique({ where: { id: req.params.id }, include: { items: true } });
     if (!order) throw NotFound("Order not found");
-    if (!["pending", "processing"].includes(order.status)) {
-      throw BadRequest(`Order cannot be cancelled in "${order.status}" status`);
-    }
-    await prisma.$transaction(async (tx) => {
-      await tx.order.update({ where: { id: order.id }, data: { status: "cancelled" } });
-      await tx.orderStatusHistory.create({
-        data: { orderId: order.id, status: "cancelled", notes: "Cancelled by admin", updatedBy: (req as any).user.id },
-      });
-      for (const item of order.items) {
-        if (item.productId) {
-          await tx.product.update({ where: { id: item.productId }, data: { stockQuantity: { increment: item.quantity } } });
-        }
-      }
-    });
+    await cancelOrder(order, { userId: (req as any).user.id, note: "Cancelled by admin" });
     if (order.userId) {
       await prisma.notification.create({
         data: { userId: order.userId, type: "order", title: "Order cancelled", message: `Order ${order.orderNumber} was cancelled by the store.` },
@@ -265,14 +226,26 @@ adminReturnsRouter.get(
 adminReturnsRouter.put(
   "/:id/status",
   can("orders.update"),
-  validate(z.object({ status: z.enum(["pending", "approved", "rejected", "processed", "completed"]), adminNotes: z.string().optional() })),
+  validate(z.object({ status: z.enum(["pending", "approved", "rejected", "processed", "completed"]), adminNotes: z.string().max(2000).optional() })),
   asyncH(async (req, res) => {
     const returnReq = await prisma.returnRequest.findUnique({ where: { id: req.params.id } });
     if (!returnReq) throw NotFound("Return request not found");
-    const updated = await prisma.returnRequest.update({
-      where: { id: returnReq.id },
-      data: { status: req.body.status, adminNotes: req.body.adminNotes ?? null, processedAt: ["processed", "completed"].includes(req.body.status) ? new Date() : null },
+    const next = req.body.status as string;
+    if (next === returnReq.status) {
+      // Same status = notes-only update (used by the admin notes field).
+      const updated = await prisma.returnRequest.update({ where: { id: returnReq.id }, data: { adminNotes: req.body.adminNotes ?? returnReq.adminNotes } });
+      return res.json({ success: true, data: updated });
+    }
+    if (!RETURN_FLOW[returnReq.status]?.includes(next)) {
+      throw BadRequest(`Cannot move return from "${returnReq.status}" to "${next}"`, "INVALID_TRANSITION");
+    }
+    if (next === "processed") throw BadRequest("Use the refund action to process a return", "USE_REFUND");
+    const { count } = await prisma.returnRequest.updateMany({
+      where: { id: returnReq.id, status: returnReq.status },
+      data: { status: next as any, adminNotes: req.body.adminNotes ?? returnReq.adminNotes, processedAt: next === "completed" ? new Date() : returnReq.processedAt },
     });
+    if (count !== 1) throw BadRequest("The return was updated by someone else. Refresh and try again.", "CONCURRENT_UPDATE");
+    const updated = await prisma.returnRequest.findUniqueOrThrow({ where: { id: returnReq.id } });
     if (returnReq.userId) {
       await prisma.notification.create({
         data: {
@@ -292,27 +265,62 @@ adminReturnsRouter.put(
 adminReturnsRouter.post(
   "/:id/refund",
   can("orders.update"),
-  validate(z.object({ refundAmount: z.number().positive().optional(), notes: z.string().optional() })),
+  validate(z.object({ refundAmount: z.number().positive().max(10_000_000).optional(), notes: z.string().max(2000).optional() })),
   asyncH(async (req, res) => {
-    const returnReq = await prisma.returnRequest.findUnique({ where: { id: req.params.id } });
-    if (!returnReq) throw NotFound("Return request not found");
-    const amount = req.body.refundAmount ?? Number(returnReq.refundAmount ?? returnReq.orderId ? await prisma.order.findUnique({ where: { id: returnReq.orderId } }).then((o) => o?.totalAmount ?? 0) : 0);
-    const updated = await prisma.returnRequest.update({
-      where: { id: returnReq.id },
-      data: { refundAmount: amount, status: "processed", adminNotes: req.body.notes ?? returnReq.adminNotes, processedAt: new Date() },
+    const returnReq = await prisma.returnRequest.findUnique({
+      where: { id: req.params.id },
+      include: { items: { include: { orderItem: true } }, order: true },
     });
-    await prisma.payment.updateMany({ where: { orderId: returnReq.orderId }, data: { status: "refunded" } });
+    if (!returnReq) throw NotFound("Return request not found");
+    if (returnReq.status !== "approved") throw BadRequest(`Only approved returns can be refunded (this one is "${returnReq.status}")`, "INVALID_TRANSITION");
+    const order = returnReq.order;
+    if (order.paymentStatus !== "paid") throw BadRequest("Nothing to refund: the order has not been paid", "NOT_PAID");
+
+    // Default refund = value of the returned items at the price actually paid.
+    const itemsValue = round2(returnReq.items.reduce((s, i) => s + Number(i.orderItem.price) * i.quantity, 0));
+    const refundable = round2(Number(order.totalAmount) - Number(order.refundedAmount));
+    const amount = round2(req.body.refundAmount ?? itemsValue);
+    if (amount <= 0) throw BadRequest("Refund amount must be positive");
+    if (amount > refundable) throw BadRequest(`Refund exceeds the refundable balance of ₹${refundable}`, "REFUND_EXCEEDS_BALANCE");
+
+    const updated = await prisma.$transaction(async (tx) => {
+      // Conditional on "approved": a double-submitted refund is applied once.
+      const { count } = await tx.returnRequest.updateMany({
+        where: { id: returnReq.id, status: "approved" },
+        data: { refundAmount: amount, status: "processed", adminNotes: req.body.notes ?? returnReq.adminNotes, processedAt: new Date() },
+      });
+      if (count !== 1) throw BadRequest("This return was already processed", "CONCURRENT_UPDATE");
+      const newRefunded = round2(Number(order.refundedAmount) + amount);
+      const fully = newRefunded >= Number(order.totalAmount);
+      await tx.order.update({
+        where: { id: order.id },
+        data: { refundedAmount: newRefunded, ...(fully ? { paymentStatus: "refunded" as const } : {}) },
+      });
+      const payment = await tx.payment.findFirst({ where: { orderId: order.id, status: "paid" } });
+      if (payment) {
+        await tx.payment.update({
+          where: { id: payment.id },
+          data: { refundedAmount: Math.min(Number(payment.amount), Number(payment.refundedAmount) + amount), ...(fully ? { status: "refunded" as const } : {}) },
+        });
+      }
+      await tx.orderStatusHistory.create({
+        data: { orderId: order.id, status: order.status, notes: `Refund of ₹${amount} recorded for return ${returnReq.returnNumber}`, updatedBy: (req as any).user.id },
+      });
+      return tx.returnRequest.findUniqueOrThrow({ where: { id: returnReq.id } });
+    });
     if (returnReq.userId) {
       await prisma.notification.create({
         data: {
           userId: returnReq.userId,
           type: "payment",
-          title: "Refund processed",
-          message: `Refund of ₹${Number(amount).toLocaleString("en-IN")} processed for return ${returnReq.returnNumber}.`,
+          title: "Refund approved",
+          message: `A refund of ₹${Number(amount).toLocaleString("en-IN")} has been approved for return ${returnReq.returnNumber}.`,
         },
       });
     }
     await logActivity(req, "return.refund", "return", returnReq.id, { newData: { refundAmount: Number(amount) } });
-    res.json({ success: true, data: updated });
+    // The refund is RECORDED here. Money movement (Razorpay refund / bank transfer for
+    // COD) is done by the finance team — no gateway refund API call is made.
+    res.json({ success: true, data: { ...updated, refundExecution: "manual" } });
   })
 );

@@ -2,12 +2,15 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [master, main]
   pull_request:
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   typecheck-and-build:
@@ -18,38 +21,66 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate --schema apps/api/prisma/schema.prisma
 
       - name: Typecheck (api, web, admin)
         run: npm run typecheck
 
       - name: Build (api, web, admin)
         run: npm run build
+        env:
+          NEXT_PUBLIC_API_URL: http://localhost:4000/api
+          NEXT_PUBLIC_SITE_URL: http://localhost:3000
+
+      - name: Dependency audit (fails on critical)
+        run: npm audit --omit=dev --audit-level=critical
 
   api-tests:
-    name: API tests
+    name: API tests (Postgres service)
     runs-on: ubuntu-latest
-    # Requires the DATABASE_URL + JWT_SECRET secrets (a Neon branch works well).
-    # Skipped automatically when the secrets are not configured (e.g. fork PRs).
+    # Tests always run against a disposable Postgres container — never against a
+    # shared or production database, and never silently skipped.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: baba
+          POSTGRES_PASSWORD: baba
+          POSTGRES_DB: baba_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U baba"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     env:
-      DATABASE_URL: ${{ secrets.DATABASE_URL }}
-      JWT_SECRET: ${{ secrets.JWT_SECRET }}
+      DATABASE_URL: postgresql://baba:baba@localhost:5432/baba_test?schema=public
+      JWT_SECRET: ci-only-secret-0123456789abcdef0123456789abcdef
       OTP_DEBUG: "true"
+      NODE_ENV: test
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Install dependencies
         run: npm ci
 
+      - name: Apply migrations (same path as production)
+        run: npx prisma migrate deploy --schema apps/api/prisma/schema.prisma
+
+      - name: Seed demo data
+        run: npm run db:seed
+
       - name: Run API test suite
-        if: env.DATABASE_URL != '' && env.JWT_SECRET != ''
         run: npm test

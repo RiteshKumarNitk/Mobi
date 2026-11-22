@@ -22,7 +22,7 @@ export default function Footer() {
           <div>
             <h4>Customer Care</h4>
             <Link href="/track">Track Order</Link>
-            <Link href="/returns">Return Policy</Link>
+            <Link href="/account?tab=orders">My Orders &amp; Returns</Link>
             <Link href="/faqs">FAQs</Link>
             <Link href="/contact">Contact Us</Link>
           </div>

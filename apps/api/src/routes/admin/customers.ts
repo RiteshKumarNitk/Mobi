@@ -1,17 +1,30 @@
 import { Router } from "express";
-import bcrypt from "bcryptjs";
 import { z } from "zod";
 import { prisma } from "../../lib/prisma";
 import { asyncH } from "../../lib/async";
 import { Conflict, NotFound } from "../../lib/errors";
 import { paginate, publicUser } from "../../lib/helpers";
-import { adminRequired } from "../../middleware/auth";
+import { adminRequired, OWNER_ROLES, requireRole } from "../../middleware/auth";
+import { revokeUserTokens } from "../../lib/tokens";
+import { hashPassword, passwordPolicyError } from "../../lib/passwords";
+import { BadRequest } from "../../lib/errors";
 import { validate } from "../../middleware/validate";
 import { logActivity } from "../../lib/activity";
 
 export const adminCustomersRouter = Router();
 
 adminCustomersRouter.use(adminRequired);
+
+// Writes are owner-only: staff/managers can view customers but not create, edit or
+// deactivate accounts. Targets are restricted to role "customer" so this API can
+// never be used to modify or lock out an admin account.
+const ownerOnly = requireRole(...OWNER_ROLES);
+
+async function customerOr404(id: string) {
+  const user = await prisma.user.findUnique({ where: { id } });
+  if (!user || user.role !== "customer") throw NotFound("Customer not found");
+  return user;
+}
 
 // GET /api/admin/customers
 adminCustomersRouter.get(
@@ -69,7 +82,7 @@ adminCustomersRouter.get(
       where: { id: req.params.id },
       include: { addresses: true, settings: true },
     });
-    if (!customer) throw NotFound("Customer not found");
+    if (!customer || customer.role !== "customer") throw NotFound("Customer not found");
     res.json({ success: true, data: publicUser(customer) });
   })
 );
@@ -101,11 +114,12 @@ adminCustomersRouter.get(
 // POST /api/admin/customers
 adminCustomersRouter.post(
   "/",
+  ownerOnly,
   validate(
     z.object({
       name: z.string().min(2),
       phone: z.string().regex(/^[0-9]{10,15}$/),
-      password: z.string().min(6),
+      password: z.string().max(128),
       email: z.string().email().optional().or(z.literal("")),
       shopName: z.string().optional(),
       gstNumber: z.string().optional(),
@@ -113,13 +127,15 @@ adminCustomersRouter.post(
   ),
   asyncH(async (req, res) => {
     const { name, phone, password, email, shopName, gstNumber } = req.body;
+    const policy = passwordPolicyError(password);
+    if (policy) throw BadRequest(policy, "VALIDATION");
     const existing = await prisma.user.findUnique({ where: { phone } });
     if (existing) throw Conflict("A user with this phone number already exists");
     const [first, ...rest] = name.trim().split(/\s+/);
     const user = await prisma.user.create({
       data: {
         phone,
-        passwordHash: await bcrypt.hash(password, 10),
+        passwordHash: await hashPassword(password),
         firstName: first,
         lastName: rest.join(" ") || null,
         email: email || null,
@@ -137,6 +153,7 @@ adminCustomersRouter.post(
 // PUT /api/admin/customers/:id
 adminCustomersRouter.put(
   "/:id",
+  ownerOnly,
   validate(
     z.object({
       firstName: z.string().optional(),
@@ -149,9 +166,11 @@ adminCustomersRouter.put(
     })
   ),
   asyncH(async (req, res) => {
+    const target = await customerOr404(req.params.id);
     const data: any = { ...req.body };
     if (data.email === "") data.email = null;
-    const user = await prisma.user.update({ where: { id: req.params.id }, data });
+    const user = await prisma.user.update({ where: { id: target.id }, data });
+    if (data.status && data.status !== "active") await revokeUserTokens(user.id);
     await logActivity(req, "customer.update", "customer", user.id);
     res.json({ success: true, data: publicUser(user) });
   })
@@ -160,8 +179,11 @@ adminCustomersRouter.put(
 // DELETE /api/admin/customers/:id - soft deactivate
 adminCustomersRouter.delete(
   "/:id",
+  ownerOnly,
   asyncH(async (req, res) => {
-    await prisma.user.update({ where: { id: req.params.id }, data: { status: "inactive" } });
+    const target = await customerOr404(req.params.id);
+    await prisma.user.update({ where: { id: target.id }, data: { status: "inactive" } });
+    await revokeUserTokens(target.id);
     await logActivity(req, "customer.delete", "customer", req.params.id);
     res.json({ success: true, data: { message: "Customer deactivated" } });
   })

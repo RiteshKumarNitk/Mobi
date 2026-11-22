@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, it } from "vitest";
 import request from "supertest";
+import { prisma } from "../src/lib/prisma";
 import { app, cleanupUser, loginAdmin, registerCustomer, uniquePhone } from "./helpers";
 
 const userIds: string[] = [];
@@ -72,10 +73,26 @@ describe("auth", () => {
     expect(res.body.data.metrics).toBeTruthy();
   });
 
-  it("allows OTP resend for a fresh number", async () => {
+  it("does not send OTPs to unregistered numbers (anti SMS-bombing), with an identical response", async () => {
     const phone = uniquePhone();
     const res = await request(app).post("/api/otp/resend").send({ phone, purpose: "register" });
     expect(res.status).toBe(200);
-    expect(res.body.data.debugCode).toBeTruthy();
+    expect(res.body.data.otpSent).toBe(true);
+    expect(res.body.data.debugCode).toBeNull();
+    expect(await prisma.otp.count({ where: { phone } })).toBe(0);
+  });
+
+  it("allows OTP resend for a pending (unverified) registration", async () => {
+    const phone = uniquePhone();
+    const reg = await request(app).post("/api/auth/register").send({ phone, password: "Test@12345", name: "Resend Tester" });
+    expect(reg.status).toBe(200);
+    const res = await request(app).post("/api/otp/resend").send({ phone, purpose: "register" });
+    expect(res.status).toBe(200);
+    expect(res.body.data.debugCode).toMatch(/^[0-9]{6}$/);
+    // OTPs are stored hashed, never as the plain code
+    const stored = await prisma.otp.findFirst({ where: { phone } });
+    expect(stored!.code).not.toBe(res.body.data.debugCode);
+    await prisma.user.deleteMany({ where: { phone } });
+    await prisma.otp.deleteMany({ where: { phone } });
   });
 });

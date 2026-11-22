@@ -42,10 +42,18 @@ export default function ReturnsPage() {
   };
 
   const refund = async () => {
-    await api(`/admin/returns/${detail.id}/refund`, { method: "POST", body: JSON.stringify({ refundAmount: refundAmount ? Number(refundAmount) : undefined }) });
-    setMsg("Refund processed");
-    load();
-    setDetail(await api(`/admin/returns/${detail.id}`));
+    const amount = refundAmount ? Number(refundAmount) : undefined;
+    if (amount !== undefined && (!Number.isFinite(amount) || amount <= 0)) return setMsg("Enter a positive refund amount");
+    const label = amount !== undefined ? fmt(amount) : "the returned items' value";
+    if (!window.confirm(`Record a refund of ${label}? The money itself must be sent via the Razorpay dashboard or bank transfer.`)) return;
+    try {
+      await api(`/admin/returns/${detail.id}/refund`, { method: "POST", body: JSON.stringify({ refundAmount: amount }) });
+      setMsg("Refund recorded. Remember to issue it in the Razorpay dashboard / by bank transfer.");
+      load();
+      setDetail(await api(`/admin/returns/${detail.id}`));
+    } catch (err: any) {
+      setMsg(err.message);
+    }
   };
 
   return (
@@ -110,7 +118,7 @@ export default function ReturnsPage() {
             <input className="input" defaultValue={detail.adminNotes ?? ""} onBlur={(e) => api(`/admin/returns/${detail.id}/status`, { method: "PUT", body: JSON.stringify({ status: detail.status, adminNotes: e.target.value }) }).catch(() => {})} />
 
             <div className="flex wrap mt-16">
-              {["approved", "rejected", "processed", "completed"].map((s) => (
+              {["approved", "rejected", "completed"].map((s) => (
                 <button key={s} className="btn sm secondary" onClick={() => setStatus(s)}>{s}</button>
               ))}
             </div>

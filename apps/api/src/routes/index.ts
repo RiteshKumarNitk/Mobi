@@ -38,6 +38,11 @@ apiRouter.use("/notifications", notificationsRouter);
 apiRouter.use("/customers", customersRouter);
 apiRouter.use("/content", contentRouter);
 apiRouter.use("/admin", adminRouter);
+// The storefront calls content endpoints at the top level (/api/pages/:slug,
+// /api/faqs, /api/blog, /api/contact, /api/newsletter/subscribe,
+// /api/company-info). Mounted last so it can never shadow the routers above;
+// /api/content/* stays available for existing clients.
+apiRouter.use("/", contentRouter);
 
 // GET /api/banners/active (spec'd top-level endpoint)
 const bannersRouter = Router();

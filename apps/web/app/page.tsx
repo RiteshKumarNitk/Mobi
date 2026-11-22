@@ -56,7 +56,9 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (!banners.length) return;
+    if (banners.length < 2) return;
+    // No auto-rotation for users who asked the OS for reduced motion.
+    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
     const t = setInterval(() => setSlide((s) => (s + 1) % banners.length), 5000);
     return () => clearInterval(t);
   }, [banners.length]);

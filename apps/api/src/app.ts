@@ -8,6 +8,8 @@ import { env } from "./lib/env";
 import { logger } from "./lib/logger";
 import { prisma } from "./lib/prisma";
 import { openapiSpec } from "./lib/openapi";
+import { Prisma } from "@prisma/client";
+import { razorpayWebhookHandler } from "./routes/payments";
 
 const SWAGGER_UI_HTML = `<!DOCTYPE html>
 <html lang="en">
@@ -45,21 +47,44 @@ export function createApp() {
   const app = express();
   const startedAt = Date.now();
 
-  app.set("trust proxy", true); // correct client IPs behind a reverse proxy
+  // Which proxies may set X-Forwarded-For (see env.ts). Never blindly `true`,
+  // or clients can spoof their IP and bypass rate limits.
+  app.set("trust proxy", env.trustProxy);
+  app.disable("x-powered-by");
+  // API responses are often personal (cart, orders, addresses). No ETag/304
+  // revalidation and no storage in browser, CDN or proxy caches. Catalog reads
+  // are cached server-side instead (lib/cache.ts).
+  app.set("etag", false);
+  app.use((_req, res, next) => {
+    res.setHeader("Cache-Control", "no-store");
+    next();
+  });
 
-  app.use(helmet({ contentSecurityPolicy: false }));
+  app.use(helmet({ contentSecurityPolicy: false, crossOriginResourcePolicy: { policy: "cross-origin" } }));
+  const origins = env.corsOrigins.split(",").map((s) => s.trim()).filter(Boolean);
   app.use(
     cors({
-      origin: env.corsOrigins === "*" ? true : env.corsOrigins.split(",").map((s) => s.trim()),
-      credentials: true,
+      // Auth uses Bearer tokens (no cookies), so credentialed CORS is not needed.
+      origin: env.corsOrigins.trim() === "*" ? true : origins,
+      credentials: false,
+      exposedHeaders: ["X-Request-Id", "Retry-After"],
     })
   );
-  app.use(express.json({ limit: "2mb" }));
+
+  // The Razorpay webhook needs the exact raw bytes for HMAC verification, so it
+  // is mounted before the JSON body parser.
+  app.post("/api/payments/razorpay/webhook", express.raw({ type: "*/*", limit: "1mb" }), (req, res, next) => {
+    razorpayWebhookHandler(req, res).catch(next);
+  });
+
+  app.use(express.json({ limit: "1mb" }));
   app.use(express.text({ type: ["text/csv", "text/plain"], limit: "5mb" }));
 
   // Request ID + structured request logging
   app.use((req, res, next) => {
-    const requestId = (req.headers["x-request-id"] as string) || crypto.randomUUID();
+    const incoming = req.headers["x-request-id"];
+    // Only echo well-formed client request ids (prevents log/header injection).
+    const requestId = typeof incoming === "string" && /^[A-Za-z0-9._-]{1,64}$/.test(incoming) ? incoming : crypto.randomUUID();
     (req as any).requestId = requestId;
     res.setHeader("X-Request-Id", requestId);
     const start = Date.now();
@@ -67,7 +92,7 @@ export function createApp() {
       logger.info("request", {
         requestId,
         method: req.method,
-        path: req.originalUrl,
+        path: req.originalUrl.split("?")[0], // query strings can carry personal data (search terms, phones)
         status: res.statusCode,
         durationMs: Date.now() - start,
         ip: req.ip,
@@ -92,17 +117,19 @@ export function createApp() {
     }
   });
 
-  // OpenAPI docs (JSON spec + Swagger UI)
-  app.get("/api/docs.json", (_req, res) => {
-    res.setHeader("Content-Type", "application/json");
-    res.setHeader("Cache-Control", "no-store");
-    res.send(JSON.stringify(openapiSpec));
-  });
-  app.get("/api/docs", (_req, res) => {
-    res.setHeader("Content-Type", "text/html; charset=utf-8");
-    res.setHeader("Cache-Control", "no-store");
-    res.send(SWAGGER_UI_HTML);
-  });
+  // OpenAPI docs (JSON spec + Swagger UI) — off in production unless API_DOCS_ENABLED=true
+  if (env.apiDocsEnabled) {
+    app.get("/api/docs.json", (_req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      res.setHeader("Cache-Control", "no-store");
+      res.send(JSON.stringify(openapiSpec));
+    });
+    app.get("/api/docs", (_req, res) => {
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.setHeader("Cache-Control", "no-store");
+      res.send(SWAGGER_UI_HTML);
+    });
+  }
 
   app.use("/api", apiRouter);
 
@@ -115,6 +142,23 @@ export function createApp() {
   app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
     if (err instanceof ApiError) {
       return res.status(err.status).json({ success: false, error: { code: err.code, message: err.message } });
+    }
+    // body-parser errors: malformed JSON (400) / body too large (413)
+    const bodyErr = err as { type?: string };
+    if (bodyErr?.type === "entity.parse.failed") {
+      return res.status(400).json({ success: false, error: { code: "BAD_JSON", message: "Malformed JSON body" } });
+    }
+    if (bodyErr?.type === "entity.too.large") {
+      return res.status(413).json({ success: false, error: { code: "PAYLOAD_TOO_LARGE", message: "Request body is too large" } });
+    }
+    if (err instanceof Prisma.PrismaClientKnownRequestError) {
+      if (err.code === "P2025") return res.status(404).json({ success: false, error: { code: "NOT_FOUND", message: "Record not found" } });
+      if (err.code === "P2002") return res.status(409).json({ success: false, error: { code: "CONFLICT", message: "A record with these details already exists" } });
+      if (err.code === "P2003") return res.status(409).json({ success: false, error: { code: "IN_USE", message: "This record is referenced by other data and cannot be removed" } });
+      if (err.code === "P2023") return res.status(400).json({ success: false, error: { code: "BAD_ID", message: "Malformed identifier" } });
+    }
+    if (err instanceof Prisma.PrismaClientValidationError) {
+      return res.status(400).json({ success: false, error: { code: "BAD_REQUEST", message: "Invalid request parameters" } });
     }
     logger.error("unhandled_error", {
       requestId: (req as any).requestId,

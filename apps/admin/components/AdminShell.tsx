@@ -22,6 +22,9 @@ const NAV = [
 ];
 
 const ADMIN_ROLES = ["super_admin", "admin", "manager", "staff"];
+/** Sections the API restricts to super_admin/admin. */
+const OWNER_ONLY = new Set(["/settings", "/roles", "/logs"]);
+const OWNER_ROLES = ["super_admin", "admin"];
 
 export default function AdminShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -85,7 +88,7 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
           <div style={{ fontSize: 11, opacity: 0.7 }}>Admin Panel</div>
         </div>
         <nav>
-          {NAV.map(([href, icon, label]) => (
+          {NAV.filter(([href]) => !OWNER_ONLY.has(href) || OWNER_ROLES.includes(user?.role)).map(([href, icon, label]) => (
             <Link
               key={href}
               href={href}

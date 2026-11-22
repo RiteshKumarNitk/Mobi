@@ -42,7 +42,7 @@ export default function AdminLogin() {
         setError("This account is not an admin account");
         return;
       }
-      setToken(data.accessToken);
+      setToken(data.accessToken, data.refreshToken);
       router.replace("/");
     } catch (err: any) {
       setError(err?.message ?? "Login failed. Please try again.");

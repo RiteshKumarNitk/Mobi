@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { api } from "@/lib/api";
+import { retryPayment } from "@/lib/payment";
 import { fmtDate, fmtDateTime, inr } from "@/lib/format";
 
 const STEP_ORDER = ["pending", "processing", "packed", "shipped", "delivered"];
@@ -16,32 +17,73 @@ export default function OrderDetail() {
   const [returnForm, setReturnForm] = useState(false);
   const [returnReason, setReturnReason] = useState("");
   const [msg, setMsg] = useState("");
+  const [paying, setPaying] = useState(false);
+  const [notFound, setNotFound] = useState(false);
 
   useEffect(() => {
     (async () => {
       try {
         setOrder(await api(`/orders/${id}`));
-      } catch {
-        /* not found */
+      } catch (err: any) {
+        if (err?.status === 401) router.push(`/login?next=/orders/${id}`);
+        else setNotFound(true);
       }
     })();
-  }, [id]);
+    const p = new URLSearchParams(window.location.search).get("payment");
+    if (p === "dismissed" || p === "failed" || p === "retry") {
+      setMsg("Your order is saved but payment was not completed. Use “Pay now” to complete it.");
+    }
+  }, [id, router]);
 
+  if (notFound) {
+    return (
+      <div className="empty-state">
+        <h3>Order not found</h3>
+        <Link href="/account?tab=orders" className="btn">My Orders</Link>
+      </div>
+    );
+  }
   if (!order) return <div className="center muted" style={{ padding: 80 }}>Loading order…</div>;
 
   const currentStep = STEP_ORDER.indexOf(order.status);
   const canCancel = ["pending", "processing"].includes(order.status);
   const canReturn = order.status === "delivered" && !order.returnRequests?.some((r: any) => ["pending", "approved", "processed"].includes(r.status));
 
+  const canPay = order.paymentMethod === "razorpay" && order.paymentStatus !== "paid" && order.paymentStatus !== "refunded" && order.status !== "cancelled";
+
   const cancel = async () => {
     if (!window.confirm("Cancel this order?")) return;
-    await api(`/orders/${id}/cancel`, { method: "POST" });
-    setOrder(await api(`/orders/${id}`));
+    try {
+      await api(`/orders/${id}/cancel`, { method: "POST" });
+      setOrder(await api(`/orders/${id}`));
+      setMsg("Order cancelled.");
+    } catch (err: any) {
+      setMsg(err.message);
+    }
   };
 
   const reorder = async () => {
-    await api(`/orders/${id}/reorder`, { method: "POST" });
-    router.push("/cart");
+    try {
+      await api(`/orders/${id}/reorder`, { method: "POST" });
+      router.push("/cart");
+    } catch (err: any) {
+      setMsg(err.message);
+    }
+  };
+
+  const payNow = async () => {
+    setPaying(true);
+    setMsg("");
+    try {
+      const r = await retryPayment(order.id, { name: order.shippingAddress?.fullName, contact: order.shippingAddress?.phone });
+      if (r.outcome === "paid") setMsg("Payment received. Thank you!");
+      else if (r.outcome === "failed") setMsg(r.message ?? "Payment failed. Please try again.");
+      setOrder(await api(`/orders/${id}`));
+    } catch (err: any) {
+      setMsg(err.message);
+    } finally {
+      setPaying(false);
+    }
   };
 
   const toggleInvoice = async () => {
@@ -61,7 +103,8 @@ export default function OrderDetail() {
     const items = order.items.map((i: any) => ({ orderItemId: i.id, quantity: i.quantity }));
     try {
       await api("/returns/create", { method: "POST", body: JSON.stringify({ orderId: order.id, reason: returnReason, items }) });
-      setMsg("Return request submitted. Track it in the admin panel.");
+      setMsg("Return request submitted. We will review it and notify you.");
+      setOrder(await api(`/orders/${id}`));
       setReturnForm(false);
     } catch (err: any) {
       setMsg(err.message);
@@ -77,6 +120,16 @@ export default function OrderDetail() {
           <span className={`pill ${order.status}`}>{order.status}</span>
         </div>
       </div>
+      {msg && <div className="alert warn small mb-16" role="status">{msg}</div>}
+      {canPay && (
+        <div className="panel mb-16 between" style={{ flexWrap: "wrap", gap: 12 }}>
+          <div>
+            <strong>Payment pending</strong>
+            <div className="small muted">Complete the online payment of {inr(order.totalAmount)} to confirm this order.</div>
+          </div>
+          <button className="btn accent" disabled={paying} onClick={payNow}>{paying ? "Opening payment…" : "Pay now"}</button>
+        </div>
+      )}
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 340px", gap: 24, alignItems: "start" }} className="cart-cols">
         <div>
@@ -145,7 +198,6 @@ export default function OrderDetail() {
             </div>
           )}
 
-          {msg && <div className="alert info">{msg}</div>}
           {returnForm && (
             <form className="panel mb-16" onSubmit={submitReturn}>
               <h3>Initiate Return</h3>

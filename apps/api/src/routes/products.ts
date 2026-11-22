@@ -7,6 +7,8 @@ import { cached } from "../lib/cache";
 
 export const productsRouter = Router();
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 function sortOrder(sort: unknown): any {
   switch (sort) {
     case "price_asc":
@@ -31,22 +33,40 @@ productsRouter.get(
   "/",
   asyncH(async (req, res) => {
     const { page, pageSize, skip, take } = paginate(req.query);
-    const { q, categoryId, brandId, minPrice, maxPrice, stock, sort, featured, isNew, isBestSeller, ids } = req.query;
+    const str = (v: unknown, max = 100) => (typeof v === "string" && v.trim() ? v.trim().slice(0, max) : undefined);
+    const uuid = (v: unknown) => (typeof v === "string" && UUID_RE.test(v) ? v : undefined);
+    const money = (v: unknown) => {
+      const n = typeof v === "string" && v.trim() !== "" ? Number(v) : NaN;
+      return Number.isFinite(n) && n >= 0 ? n : undefined;
+    };
+    const q = str(req.query.q);
+    const categoryId = uuid(req.query.categoryId);
+    const brandId = uuid(req.query.brandId);
+    const minPrice = money(req.query.minPrice);
+    const maxPrice = money(req.query.maxPrice);
+    const { stock, sort, featured, isNew, isBestSeller } = req.query;
+    // Recently-viewed lookups: at most 50 well-formed ids.
+    const ids = typeof req.query.ids === "string" ? req.query.ids.split(",").filter((s) => UUID_RE.test(s)).slice(0, 50).join(",") || undefined : undefined;
     const where: any = { status: "active" };
+
+    // A malformed id filter must return nothing, not every product.
+    if ((req.query.categoryId && !categoryId) || (req.query.brandId && !brandId)) {
+      return res.json({ success: true, data: { items: [], total: 0, page, pageSize, pages: 0 } });
+    }
 
     if (q) {
       where.OR = [
-        { name: { contains: String(q), mode: "insensitive" } },
-        { sku: { contains: String(q), mode: "insensitive" } },
-        { brand: { name: { contains: String(q), mode: "insensitive" } } },
+        { name: { contains: q, mode: "insensitive" } },
+        { sku: { contains: q, mode: "insensitive" } },
+        { brand: { name: { contains: q, mode: "insensitive" } } },
       ];
     }
     if (categoryId) {
-      where.category = { OR: [{ id: String(categoryId) }, { parentId: String(categoryId) }] };
+      where.category = { OR: [{ id: categoryId }, { parentId: categoryId }] };
     }
-    if (brandId) where.brandId = String(brandId);
-    if (minPrice) where.price = { ...(where.price ?? {}), gte: Number(minPrice) };
-    if (maxPrice) where.price = { ...(where.price ?? {}), lte: Number(maxPrice) };
+    if (brandId) where.brandId = brandId;
+    if (minPrice !== undefined) where.price = { ...(where.price ?? {}), gte: minPrice };
+    if (maxPrice !== undefined) where.price = { ...(where.price ?? {}), lte: maxPrice };
     if (stock === "in") where.stockQuantity = { gt: 0 };
     if (stock === "out") where.stockQuantity = 0;
     if (featured === "true") where.isFeatured = true;

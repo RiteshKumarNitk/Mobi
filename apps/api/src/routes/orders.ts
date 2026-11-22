@@ -6,22 +6,28 @@ import { BadRequest, Forbidden, NotFound } from "../lib/errors";
 import { effectiveUnitPrice, genOrderNumber, paginate, round2 } from "../lib/helpers";
 import { authRequired, isAdminRole } from "../middleware/auth";
 import { validate } from "../middleware/validate";
-import { validateCouponForOrder } from "../lib/coupons";
-import { shippingChargeFor } from "../lib/settings";
-import { createRazorpayOrder } from "../lib/razorpay";
+import { redeemCoupon, validateCouponForOrder } from "../lib/coupons";
+import { lowStockThreshold, shippingChargeFor } from "../lib/settings";
+import { paymentMode, type GatewayOrder } from "../lib/razorpay";
+import { ensureGatewayOrder } from "../lib/payments";
 import { buildInvoice } from "../lib/invoice";
 import { logActivity } from "../lib/activity";
+import { logger } from "../lib/logger";
+import { syncStockStatus, takeStock } from "../lib/stock";
+import { cancelOrder } from "../lib/orderOps";
+import { rateLimit } from "../lib/rateLimit";
 
 export const ordersRouter = Router();
 
 const createOrderSchema = z.object({
   addressId: z.string().uuid(),
   paymentMethod: z.enum(["razorpay", "cod"]),
-  shippingMethod: z.string().optional(),
-  couponCode: z.string().optional(),
-  notes: z.string().optional(),
+  shippingMethod: z.enum(["standard"]).optional(),
+  couponCode: z.string().trim().max(50).optional(),
+  notes: z.string().max(1000).optional(),
   items: z
-    .array(z.object({ productId: z.string().uuid(), quantity: z.number().int().min(1) }))
+    .array(z.object({ productId: z.string().uuid(), quantity: z.number().int().min(1).max(10000) }))
+    .max(200)
     .optional(),
 });
 
@@ -34,6 +40,7 @@ async function loadOrder(id: string, include: any = {}): Promise<any> {
 // GET /api/orders/track/:orderNumber - public guest tracking
 ordersRouter.get(
   "/track/:orderNumber",
+  rateLimit({ max: 30 }), // slows order-number guessing
   asyncH(async (req, res) => {
     const order = await prisma.order.findUnique({
       where: { orderNumber: req.params.orderNumber },
@@ -47,7 +54,8 @@ ordersRouter.get(
         status: order.status,
         createdAt: order.createdAt,
         deliveredAt: order.deliveredAt,
-        timeline: order.statusHistory.map((h) => ({ status: h.status, notes: h.notes, at: h.createdAt })),
+        // Public endpoint: internal notes (payment ids, admin remarks) are not exposed.
+        timeline: order.statusHistory.map((h) => ({ status: h.status, at: h.createdAt })),
       },
     });
   })
@@ -57,25 +65,34 @@ ordersRouter.get(
 ordersRouter.post(
   "/create",
   authRequired,
+  rateLimit({ max: 20 }),
   validate(createOrderSchema),
   asyncH(async (req, res) => {
     const userId = (req as any).user.id;
     const { addressId, paymentMethod, shippingMethod, couponCode, notes, items } = req.body;
 
+    // Refuse online payment up-front when the gateway is unavailable, instead of
+    // creating an order that can never be paid (and never silently "mock-paying" it).
+    if (paymentMethod === "razorpay" && paymentMode() === "disabled") {
+      throw BadRequest("Online payment is currently unavailable. Please choose Cash on Delivery.", "PAYMENTS_DISABLED");
+    }
+
     const address = await prisma.userAddress.findFirst({ where: { id: addressId, userId } });
     if (!address) throw NotFound("Shipping address not found");
 
-    let lines: { productId: string; quantity: number }[];
-    if (items && items.length) {
-      lines = items;
+    const fromCart = !(items && items.length);
+    let rawLines: { productId: string; quantity: number }[];
+    if (!fromCart) {
+      rawLines = items;
     } else {
-      const cartItems = await prisma.cartItem.findMany({
-        where: { userId, isSavedForLater: false },
-        include: { product: true },
-      });
+      const cartItems = await prisma.cartItem.findMany({ where: { userId, isSavedForLater: false } });
       if (!cartItems.length) throw BadRequest("Your cart is empty");
-      lines = cartItems.map((c) => ({ productId: c.productId, quantity: c.quantity }));
+      rawLines = cartItems.map((c) => ({ productId: c.productId, quantity: c.quantity }));
     }
+    // One line per product: bulk pricing and stock checks must see the combined quantity.
+    const merged = new Map<string, number>();
+    for (const l of rawLines) merged.set(l.productId, (merged.get(l.productId) ?? 0) + l.quantity);
+    const lines = [...merged.entries()].map(([productId, quantity]) => ({ productId, quantity }));
 
     const products = await prisma.product.findMany({
       where: { id: { in: lines.map((l) => l.productId) }, status: "active" },
@@ -84,14 +101,18 @@ ordersRouter.post(
 
     for (const line of lines) {
       const p = byId.get(line.productId);
-      if (!p) throw BadRequest("Some products in your order are no longer available");
-      if (p.stockQuantity < line.quantity) throw BadRequest(`Insufficient stock for "${p.name}". Only ${p.stockQuantity} left.`);
+      if (!p) throw BadRequest("Some products in your order are no longer available", "PRODUCT_UNAVAILABLE");
+      // Early, friendly check. The authoritative check is the conditional decrement in takeStock().
+      if (p.stockQuantity < line.quantity) throw BadRequest(`Insufficient stock for "${p.name}". Only ${p.stockQuantity} left.`, "OUT_OF_STOCK");
     }
 
-    const subtotal = lines.reduce((s, l) => {
-      const p = byId.get(l.productId)!;
-      return s + effectiveUnitPrice(p, l.quantity) * l.quantity;
-    }, 0);
+    // All money is computed here from DB prices — client-supplied amounts are never used.
+    const subtotal = round2(
+      lines.reduce((s, l) => {
+        const p = byId.get(l.productId)!;
+        return s + round2(effectiveUnitPrice(p, l.quantity) * l.quantity);
+      }, 0)
+    );
 
     let coupon: any = null;
     let discount = 0;
@@ -100,7 +121,7 @@ ordersRouter.post(
         where: { code: String(couponCode).toUpperCase() },
         include: { applicableCategories: true, applicableProducts: true },
       });
-      const check = await validateCouponForOrder(coupon, userId, lines, byId as any);
+      const check = await validateCouponForOrder(coupon, userId, lines, byId, subtotal);
       if (!check.valid) throw BadRequest(check.message, "COUPON_INVALID");
       discount = check.discount;
     }
@@ -108,6 +129,8 @@ ordersRouter.post(
     const shipping = subtotal - discount > 0 ? await shippingChargeFor(subtotal - discount) : 0;
     const total = round2(subtotal - discount + shipping);
     const orderNumber = genOrderNumber();
+    const lowStock = await lowStockThreshold();
+    const names = new Map(products.map((p) => [p.id, p.name]));
 
     const order = await prisma.$transaction(async (tx) => {
       const created = await tx.order.create({
@@ -148,20 +171,18 @@ ordersRouter.post(
         include: { items: true },
       });
 
-      for (const line of lines) {
-        await tx.product.update({
-          where: { id: line.productId },
-          data: { stockQuantity: { decrement: line.quantity } },
-        });
-      }
+      // Conditional decrements: rolls the whole order back if any line would oversell.
+      await takeStock(tx, lines, names);
+      await syncStockStatus(tx, lines.map((l) => l.productId), lowStock);
 
       if (coupon) {
-        await tx.coupon.update({ where: { id: coupon.id }, data: { usedCount: { increment: 1 } } });
+        if (!(await redeemCoupon(tx, coupon.id))) throw BadRequest("This coupon has reached its usage limit", "COUPON_INVALID");
         await tx.couponUsage.create({ data: { couponId: coupon.id, userId, orderId: created.id } });
       }
 
-      await tx.cartItem.deleteMany({ where: { userId } });
-      await tx.cartSession.update({ where: { userId }, data: { couponId: null } }).catch(() => {});
+      // Remove only what was ordered from the cart (saved-for-later items stay).
+      await tx.cartItem.deleteMany({ where: { userId, isSavedForLater: false, productId: { in: lines.map((l) => l.productId) } } });
+      if (coupon) await tx.cartSession.updateMany({ where: { userId }, data: { couponId: null } });
       return created;
     });
 
@@ -175,9 +196,17 @@ ordersRouter.post(
       },
     });
 
-    let razorpayOrder: any = null;
+    let razorpayOrder: GatewayOrder | null = null;
+    let paymentError: string | null = null;
     if (paymentMethod === "razorpay") {
-      razorpayOrder = await createRazorpayOrder(Math.round(total * 100), orderNumber, { orderId: order.id });
+      try {
+        razorpayOrder = await ensureGatewayOrder(order);
+      } catch (e: any) {
+        // The order is saved; the customer can retry payment from the order page
+        // (POST /api/payments/razorpay/create-order).
+        paymentError = "Could not start the online payment. You can retry from your order page.";
+        logger.error("gateway_order_failed", { orderId: order.id, error: e?.message });
+      }
     }
 
     await logActivity(req, "order.create", "order", order.id, { newData: { orderNumber, total } });
@@ -194,6 +223,7 @@ ordersRouter.post(
         },
         razorpayOrder,
         mockPayment: razorpayOrder?.mock ?? false,
+        paymentError,
       },
     });
   })
@@ -291,24 +321,7 @@ ordersRouter.post(
     if (!order) throw NotFound("Order not found");
     const user = (req as any).user;
     if (order.userId !== user.id && !adminRoles(user.role)) throw Forbidden();
-    if (!["pending", "processing"].includes(order.status)) {
-      throw BadRequest(`Order cannot be cancelled in "${order.status}" status`);
-    }
-    await prisma.$transaction(async (tx) => {
-      await tx.order.update({ where: { id: order.id }, data: { status: "cancelled" } });
-      await tx.orderStatusHistory.create({
-        data: { orderId: order.id, status: "cancelled", notes: "Cancelled", updatedBy: user.id },
-      });
-      for (const item of order.items) {
-        if (item.productId) {
-          await tx.product.update({ where: { id: item.productId }, data: { stockQuantity: { increment: item.quantity } } });
-        }
-      }
-      await tx.payment.updateMany({
-        where: { orderId: order.id, status: "pending" },
-        data: { status: order.paymentStatus === "paid" ? "refunded" : "failed" },
-      });
-    });
+    await cancelOrder(order, { userId: user.id, note: "Cancelled by customer" });
     if (order.userId) {
       await prisma.notification.create({
         data: { userId: order.userId, type: "order", title: "Order cancelled", message: `Order ${order.orderNumber} has been cancelled.` },

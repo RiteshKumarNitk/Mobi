@@ -107,7 +107,7 @@ export const openapiSpec = {
         summary: "Reset password with OTP",
         requestBody: {
           required: true,
-          content: { "application/json": { schema: { type: "object", required: ["phone", "code", "newPassword"], properties: { phone: { type: "string" }, code: { type: "string", minLength: 6, maxLength: 6 }, newPassword: { type: "string", minLength: 6 } } } } },
+          content: { "application/json": { schema: { type: "object", required: ["phone", "code", "newPassword"], properties: { phone: { type: "string" }, code: { type: "string", minLength: 6, maxLength: 6 }, newPassword: { type: "string", minLength: 8, description: "8+ chars, letters and digits" } } } } },
         },
         responses: { "200": { description: "Password updated" } },
       },
@@ -348,11 +348,31 @@ export const openapiSpec = {
     "/orders/{id}/reorder": {
       post: { tags: ["Orders & Payments"], security: [{ bearerAuth: [] }], summary: "Re-add all items of an order to the cart", parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }], responses: { "200": { description: "Cart refilled" } } },
     },
-    "/payments/razorpay/create-order": {
-      post: { tags: ["Orders & Payments"], summary: "Create a Razorpay order (mock in dev)", requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["amount", "currency", "receipt"], properties: { amount: { type: "number" }, currency: { type: "string", default: "INR" }, receipt: { type: "string" } } } } } }, responses: { "200": { description: "Razorpay order" } } },
-    },
     "/payments/verify": {
-      post: { tags: ["Orders & Payments"], summary: "Verify a Razorpay payment signature", requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["orderId", "razorpayPaymentId", "razorpaySignature"], properties: { orderId: { type: "string" }, razorpayPaymentId: { type: "string" }, razorpaySignature: { type: "string" } } } } } }, responses: { "200": { description: "Verified; order marked paid" } } },
+      post: {
+        tags: ["Orders & Payments"],
+        security: [{ bearerAuth: [] }],
+        summary: "Verify a Razorpay checkout callback",
+        description:
+          "Checks that razorpayOrderId is the gateway order created for this order, verifies the HMAC signature, and (live mode) fetches the payment from Razorpay to confirm it is captured for the exact order total. Idempotent.",
+        requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["orderId", "razorpayOrderId", "razorpayPaymentId", "razorpaySignature"], properties: { orderId: { type: "string", format: "uuid" }, razorpayOrderId: { type: "string" }, razorpayPaymentId: { type: "string" }, razorpaySignature: { type: "string" } } } } } },
+        responses: { "200": { description: "Verified; order marked paid" }, "400": { description: "PAYMENT_ORDER_MISMATCH / PAYMENT_VERIFY_FAILED / PAYMENT_AMOUNT_MISMATCH / PAYMENT_NOT_CAPTURED" } },
+      },
+    },
+    "/payments/config": {
+      get: { tags: ["Orders & Payments"], summary: "Available payment options", description: "mode = razorpay | mock (development only) | disabled (production without keys: COD only).", responses: { "200": { description: "{ mode, onlineEnabled, mock }" } } },
+    },
+    "/payments/razorpay/create-order": {
+      post: { tags: ["Orders & Payments"], security: [{ bearerAuth: [] }], summary: "Start / retry online payment for an unpaid order", description: "Reuses the order's existing gateway order where possible. Amount always comes from the database.", requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["orderId"], properties: { orderId: { type: "string", format: "uuid" } } } } } }, responses: { "200": { description: "Gateway order { id, amount (paise), currency, mock, keyId }" }, "400": { description: "PAYMENTS_DISABLED / order cancelled" }, "409": { description: "Already paid" } } },
+    },
+    "/payments/failed": {
+      post: { tags: ["Orders & Payments"], security: [{ bearerAuth: [] }], summary: "Report a failed/dismissed checkout attempt (informational)", requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["orderId", "razorpayOrderId"], properties: { orderId: { type: "string" }, razorpayOrderId: { type: "string" }, reason: { type: "string" } } } } } }, responses: { "200": { description: "Recorded" } } },
+    },
+    "/payments/razorpay/webhook": {
+      post: { tags: ["Orders & Payments"], summary: "Razorpay webhook (server-to-server)", description: "Raw body, verified with X-Razorpay-Signature (HMAC-SHA256, RAZORPAY_WEBHOOK_SECRET). Each X-Razorpay-Event-Id is processed once. Handles payment.captured, order.paid, payment.failed, refund.processed.", responses: { "200": { description: "Processed, duplicate, or permanently rejected" }, "401": { description: "Bad signature" } } },
+    },
+    "/auth/change-password": {
+      post: { tags: ["Auth"], security: [{ bearerAuth: [] }], summary: "Change own password (revokes other sessions, returns a fresh token pair)", requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["currentPassword", "newPassword"], properties: { currentPassword: { type: "string" }, newPassword: { type: "string", minLength: 8 } } } } } }, responses: { "200": { description: "Changed" }, "400": { description: "Wrong current password / weak new password" } } },
     },
 
     // ================= ACCOUNT =================
@@ -630,7 +650,7 @@ export const openapiSpec = {
         required: ["phone", "password", "name"],
         properties: {
           phone: { type: "string", example: "9876543210", pattern: "^[0-9]{10,15}$" },
-          password: { type: "string", minLength: 6 },
+          password: { type: "string", minLength: 8, description: "8+ chars, letters and digits" },
           name: { type: "string", minLength: 2 },
           email: { type: "string", format: "email" },
           shopName: { type: "string" },

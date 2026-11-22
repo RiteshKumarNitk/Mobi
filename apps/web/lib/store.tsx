@@ -60,7 +60,7 @@ interface StoreValue {
   cart: CartData;
   cartCount: number;
   wishlist: string[];
-  login: (token: string, user: User) => void;
+  login: (token: string, user: User, refreshToken?: string) => void;
   logout: () => void;
   refreshCart: () => Promise<void>;
   addToCart: (productId: string, qty?: number) => Promise<void>;
@@ -107,8 +107,9 @@ export function Providers({ children }: { children: React.ReactNode }) {
         try {
           const me = await api<{ user: User }>("/auth/me");
           setUser(me.user);
-        } catch {
-          setToken(null);
+        } catch (e: any) {
+          // Only a rejected session logs out; a network blip keeps the stored session.
+          if (e?.status === 401) setToken(null);
         }
       }
       await Promise.all([refreshCart(), refreshWishlist()]);
@@ -118,8 +119,8 @@ export function Providers({ children }: { children: React.ReactNode }) {
   }, []);
 
   const login = useCallback(
-    (token: string, u: User) => {
-      setToken(token);
+    (token: string, u: User, refreshToken?: string) => {
+      setToken(token, refreshToken ?? null);
       setUser(u);
       refreshCart();
       refreshWishlist();

@@ -8,6 +8,7 @@ import { validate } from "../middleware/validate";
 import { rateLimit } from "../lib/rateLimit";
 import { cached } from "../lib/cache";
 import { getSettingsGroup } from "../lib/settings";
+import { sanitizeRichText } from "../lib/sanitize";
 
 export const contentRouter = Router();
 
@@ -37,7 +38,7 @@ contentRouter.get(
     const page = await cached(`content:pages:${req.params.slug}`, 300, async () => {
       const found = await prisma.page.findUnique({ where: { slug: req.params.slug } });
       if (!found || found.status !== "published") throw NotFound("Page not found");
-      return found;
+      return { ...found, content: sanitizeRichText(found.content) };
     }, res);
     res.json({ success: true, data: page });
   })
@@ -50,7 +51,7 @@ contentRouter.get(
     const { category, q } = req.query;
     const where: any = { status: "active" };
     if (category) where.category = String(category);
-    if (q) where.question = { contains: String(q) };
+    if (q) where.question = { contains: String(q).slice(0, 100), mode: "insensitive" };
     const faqs = await prisma.faq.findMany({ where, orderBy: { displayOrder: "asc" } });
     res.json({ success: true, data: faqs });
   })
@@ -74,12 +75,22 @@ contentRouter.get(
     const { category, q } = req.query;
     const where: any = { status: "published" };
     if (category) where.category = String(category);
-    if (q) where.OR = [{ title: { contains: String(q) } }, { excerpt: { contains: String(q) } }];
+    if (q) where.OR = [{ title: { contains: String(q).slice(0, 100), mode: "insensitive" } }, { excerpt: { contains: String(q).slice(0, 100), mode: "insensitive" } }];
     const [total, items] = await Promise.all([
       prisma.blogPost.count({ where }),
       prisma.blogPost.findMany({ where, orderBy: { publishedAt: "desc" }, skip, take }),
     ]);
     res.json({ success: true, data: { items, total, page, pageSize, pages: Math.ceil(total / pageSize) } });
+  })
+);
+
+// GET /api/blog/categories (declared before /blog/:slug, which would otherwise capture it)
+contentRouter.get(
+  "/blog/categories",
+  asyncH(async (_req, res) => {
+    const posts = await prisma.blogPost.findMany({ where: { status: "published" }, select: { category: true } });
+    const categories = [...new Set(posts.map((p) => p.category).filter(Boolean))];
+    res.json({ success: true, data: categories });
   })
 );
 
@@ -90,24 +101,14 @@ contentRouter.get(
     const post = await prisma.blogPost.findUnique({ where: { slug: req.params.slug } });
     if (!post || post.status !== "published") throw NotFound("Blog post not found");
     await prisma.blogPost.update({ where: { id: post.id }, data: { views: { increment: 1 } } });
-    res.json({ success: true, data: post });
-  })
-);
-
-// GET /api/blog/categories
-contentRouter.get(
-  "/blog/categories",
-  asyncH(async (_req, res) => {
-    const posts = await prisma.blogPost.findMany({ where: { status: "published" }, select: { category: true } });
-    const categories = [...new Set(posts.map((p) => p.category).filter(Boolean))];
-    res.json({ success: true, data: categories });
+    res.json({ success: true, data: { ...post, content: sanitizeRichText(post.content) } });
   })
 );
 
 // POST /api/newsletter/subscribe
 contentRouter.post(
   "/newsletter/subscribe",
-  validate(z.object({ email: z.string().email() })),
+  validate(z.object({ email: z.string().email().max(200).transform((e) => e.toLowerCase()) })),
   rateLimit({ max: 10 }),
   asyncH(async (req, res) => {
     await prisma.newsletterSubscriber.upsert({
@@ -122,7 +123,7 @@ contentRouter.post(
 // POST /api/contact
 contentRouter.post(
   "/contact",
-  validate(z.object({ name: z.string().min(2), email: z.string().email(), phone: z.string().optional(), subject: z.string().optional(), message: z.string().min(5) })),
+  validate(z.object({ name: z.string().trim().min(2).max(100), email: z.string().email().max(200), phone: z.string().max(20).optional(), subject: z.string().max(200).optional(), message: z.string().trim().min(5).max(5000) })),
   rateLimit({ max: 10 }),
   asyncH(async (req, res) => {
     await prisma.contactMessage.create({ data: req.body });

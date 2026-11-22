@@ -6,7 +6,8 @@ import { prisma } from "../../lib/prisma";
 import { asyncH } from "../../lib/async";
 import { Forbidden, NotFound } from "../../lib/errors";
 import { paginate, round2 } from "../../lib/helpers";
-import { adminRequired, can } from "../../middleware/auth";
+import { adminRequired, can, OWNER_ROLES, requireRole } from "../../middleware/auth";
+import { BadRequest } from "../../lib/errors";
 import { validate } from "../../middleware/validate";
 import { logActivity } from "../../lib/activity";
 import { lowStockThreshold } from "../../lib/settings";
@@ -14,6 +15,13 @@ import { lowStockThreshold } from "../../lib/settings";
 export const adminSystemRouter = Router();
 
 adminSystemRouter.use(adminRequired);
+
+// Settings, roles, activity logs and backups are owner-only (super_admin/admin).
+// Backups and logs contain customer PII; settings may hold integration secrets.
+const ownerOnly = requireRole(...OWNER_ROLES);
+
+/** Settings whose value feeds money/stock calculations must be valid numbers. */
+const NUMERIC_SETTINGS = new Set(["shipping_flat_rate", "shipping_free_threshold", "low_stock_threshold", "tax_rate"]);
 
 const SETTING_GROUPS = ["general", "payment", "shipping", "email", "notification"] as const;
 
@@ -24,6 +32,7 @@ const SETTING_GROUPS = ["general", "payment", "shipping", "email", "notification
 // GET /api/admin/settings
 adminSystemRouter.get(
   "/settings",
+  ownerOnly,
   asyncH(async (_req, res) => {
     const rows = await prisma.systemSetting.findMany();
     const grouped: Record<string, Record<string, string>> = {};
@@ -38,6 +47,7 @@ adminSystemRouter.get(
 // GET /api/admin/settings/:group
 adminSystemRouter.get(
   "/settings/:group",
+  ownerOnly,
   asyncH(async (req, res) => {
     if (!SETTING_GROUPS.includes(req.params.group as any)) throw NotFound("Unknown settings group");
     const rows = await prisma.systemSetting.findMany({ where: { groupKey: req.params.group } });
@@ -50,13 +60,23 @@ adminSystemRouter.get(
 // PUT /api/admin/settings/:group
 adminSystemRouter.put(
   "/settings/:group",
+  ownerOnly,
   asyncH(async (req, res) => {
-    const role = (req as any).user.role as string;
-    if (!["super_admin", "admin"].includes(role)) throw Forbidden("Only admins can change settings");
     if (!SETTING_GROUPS.includes(req.params.group as any)) throw NotFound("Unknown settings group");
     const values = req.body?.values ?? req.body;
-    if (typeof values !== "object" || values === null) throw new Error("Invalid settings payload");
-    for (const [key, value] of Object.entries(values)) {
+    if (typeof values !== "object" || values === null || Array.isArray(values)) throw BadRequest("Invalid settings payload");
+    const entries = Object.entries(values);
+    if (entries.length > 100) throw BadRequest("Too many settings in one request");
+    for (const [key, value] of entries) {
+      if (!/^[a-z0-9_]{1,64}$/.test(key)) throw BadRequest(`Invalid setting key "${key.slice(0, 64)}"`);
+      if (typeof value === "object" && value !== null) throw BadRequest(`Setting "${key}" must be a plain value`);
+      if (String(value ?? "").length > 5000) throw BadRequest(`Setting "${key}" is too long`);
+      if (NUMERIC_SETTINGS.has(key)) {
+        const n = Number(value);
+        if (String(value).trim() === "" || !Number.isFinite(n) || n < 0) throw BadRequest(`Setting "${key}" must be a non-negative number`);
+      }
+    }
+    for (const [key, value] of entries) {
       await prisma.systemSetting.upsert({
         where: { key },
         update: { value: String(value), groupKey: req.params.group },
@@ -103,11 +123,17 @@ adminSystemRouter.get(
 );
 
 // POST /api/admin/roles
+const roleSchema = z.object({
+  name: z.string().trim().min(2).max(60),
+  description: z.string().max(500).nullable().optional(),
+  permissions: z.array(z.string().max(60)).max(50).optional(),
+});
+
 adminSystemRouter.post(
   "/roles",
+  ownerOnly,
+  validate(roleSchema),
   asyncH(async (req, res) => {
-    const role = (req as any).user.role as string;
-    if (!["super_admin", "admin"].includes(role)) throw Forbidden("Only admins can manage roles");
     const d = req.body;
     const created = await prisma.roleGroup.create({
       data: { name: d.name, description: d.description ?? null, permissions: d.permissions ?? [] },
@@ -120,9 +146,9 @@ adminSystemRouter.post(
 // PUT /api/admin/roles/:id
 adminSystemRouter.put(
   "/roles/:id",
+  ownerOnly,
+  validate(roleSchema.partial()),
   asyncH(async (req, res) => {
-    const role = (req as any).user.role as string;
-    if (!["super_admin", "admin"].includes(role)) throw Forbidden("Only admins can manage roles");
     const d = req.body;
     const data: any = {};
     if (d.name !== undefined) data.name = d.name;
@@ -137,9 +163,8 @@ adminSystemRouter.put(
 // DELETE /api/admin/roles/:id
 adminSystemRouter.delete(
   "/roles/:id",
+  ownerOnly,
   asyncH(async (req, res) => {
-    const role = (req as any).user.role as string;
-    if (!["super_admin", "admin"].includes(role)) throw Forbidden("Only admins can manage roles");
     await prisma.roleGroup.delete({ where: { id: req.params.id } });
     await logActivity(req, "role.delete", "role", req.params.id);
     res.json({ success: true, data: { message: "Role deleted" } });
@@ -153,16 +178,17 @@ adminSystemRouter.delete(
 // GET /api/admin/logs
 adminSystemRouter.get(
   "/logs",
+  ownerOnly,
   asyncH(async (req, res) => {
     const { page, pageSize, skip, take } = paginate(req.query);
     const { q } = req.query;
     const where: any = {};
-    if (q) where.action = { contains: String(q) };
+    if (q) where.action = { contains: String(q).slice(0, 100), mode: "insensitive" };
     const [total, items] = await Promise.all([
       prisma.activityLog.count({ where }),
       prisma.activityLog.findMany({
         where,
-        include: { user: true },
+        include: { user: { select: { firstName: true, lastName: true, phone: true } } },
         orderBy: { createdAt: "desc" },
         skip,
         take,
@@ -184,8 +210,14 @@ adminSystemRouter.get(
 // GET /api/admin/logs/export
 adminSystemRouter.get(
   "/logs/export",
+  ownerOnly,
   asyncH(async (req, res) => {
-    const rows = await prisma.activityLog.findMany({ include: { user: true }, orderBy: { createdAt: "desc" } });
+    // Bounded export; user records are reduced to non-secret fields (never password hashes).
+    const rows = await prisma.activityLog.findMany({
+      include: { user: { select: { id: true, firstName: true, lastName: true, phone: true, role: true } } },
+      orderBy: { createdAt: "desc" },
+      take: 50_000,
+    });
     res.setHeader("Content-Type", "application/json");
     res.setHeader("Content-Disposition", "attachment; filename=activity-logs.json");
     res.send(JSON.stringify(rows, null, 2));
@@ -195,10 +227,11 @@ adminSystemRouter.get(
 // GET /api/admin/logs/:type
 adminSystemRouter.get(
   "/logs/:type",
+  ownerOnly,
   asyncH(async (req, res) => {
     const logs = await prisma.activityLog.findMany({
       where: { entityType: req.params.type },
-      include: { user: true },
+      include: { user: { select: { id: true, firstName: true, lastName: true, phone: true, role: true } } },
       orderBy: { createdAt: "desc" },
       take: 100,
     });
@@ -331,6 +364,12 @@ adminSystemRouter.get(
 
 const BACKUP_DIR = path.join(process.cwd(), "data", "backups");
 
+/** Backup ids are generated by us; anything else (e.g. "../") is rejected to prevent path traversal. */
+function backupFile(id: string): string {
+  if (!/^backup-[0-9TZ-]{10,40}$/.test(id)) throw NotFound("Backup not found");
+  return path.join(BACKUP_DIR, `${id}.json`);
+}
+
 function ensureBackupDir() {
   fs.mkdirSync(BACKUP_DIR, { recursive: true });
 }
@@ -338,6 +377,7 @@ function ensureBackupDir() {
 // GET /api/admin/backups
 adminSystemRouter.get(
   "/backups",
+  ownerOnly,
   asyncH(async (_req, res) => {
     ensureBackupDir();
     const files = fs
@@ -355,6 +395,7 @@ adminSystemRouter.get(
 // POST /api/admin/backups
 adminSystemRouter.post(
   "/backups",
+  ownerOnly,
   asyncH(async (req, res) => {
     ensureBackupDir();
     const name = `backup-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
@@ -376,9 +417,10 @@ adminSystemRouter.post(
 // GET /api/admin/backups/:id/download
 adminSystemRouter.get(
   "/backups/:id/download",
+  ownerOnly,
   asyncH(async (req, res) => {
     ensureBackupDir();
-    const file = path.join(BACKUP_DIR, `${req.params.id}.json`);
+    const file = backupFile(req.params.id);
     if (!fs.existsSync(file)) throw NotFound("Backup not found");
     res.setHeader("Content-Type", "application/json");
     res.setHeader("Content-Disposition", `attachment; filename=${req.params.id}.json`);
@@ -393,7 +435,7 @@ adminSystemRouter.post(
     const role = (req as any).user.role as string;
     if (role !== "super_admin") throw Forbidden("Only the super admin can restore backups");
     ensureBackupDir();
-    const file = path.join(BACKUP_DIR, `${req.params.id}.json`);
+    const file = backupFile(req.params.id);
     if (!fs.existsSync(file)) throw NotFound("Backup not found");
     const data = JSON.parse(fs.readFileSync(file, "utf8"));
     for (const s of data.settings ?? []) {

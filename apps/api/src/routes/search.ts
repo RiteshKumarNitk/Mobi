@@ -10,7 +10,7 @@ export const searchRouter = Router();
 searchRouter.get(
   "/",
   asyncH(async (req, res) => {
-    const q = String(req.query.q ?? "").trim();
+    const q = String(req.query.q ?? "").trim().slice(0, 100);
     if (!q) return res.json({ success: true, data: { items: [], total: 0, page: 1, pageSize: 20, pages: 0 } });
     const { page, pageSize, skip, take } = paginate(req.query);
     const where: any = {
@@ -33,7 +33,7 @@ searchRouter.get(
 searchRouter.get(
   "/suggest",
   asyncH(async (req, res) => {
-    const q = String(req.query.q ?? "").trim();
+    const q = String(req.query.q ?? "").trim().slice(0, 100);
     if (q.length < 2) return res.json({ success: true, data: { products: [], categories: [], brands: [] } });
     const data = await cached(`catalog:suggest:${q.toLowerCase()}`, 60, async () => {
       const [products, categories, brands] = await Promise.all([

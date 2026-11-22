@@ -5,6 +5,7 @@ import AdminShell from "@/components/AdminShell";
 export const metadata: Metadata = {
   title: "Baba Communication Admin",
   description: "Admin panel for the Baba Communication B2B eCommerce platform",
+  robots: { index: false, follow: false },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

@@ -453,3 +453,31 @@ h1, h2, h3, h4 { line-height: 1.25; }
   .card-img { height: 140px; }
   .nav .container { overflow-x: auto; }
 }
+
+/* ---------- Production hardening: layout, accessibility ---------- */
+img { max-width: 100%; }
+/* Cart / checkout two-column layout (summary sidebar). Was previously unstyled
+   inline-only, which overflowed on phones. */
+@media (max-width: 900px) {
+  .cart-cols { grid-template-columns: 1fr !important; }
+  .cart-cols > aside { position: static !important; }
+}
+/* Wide data tables scroll inside their container instead of the page. */
+@media (max-width: 600px) {
+  .table { display: block; overflow-x: auto; white-space: nowrap; }
+  .steps { flex-wrap: wrap; gap: 6px; }
+}
+/* Visible keyboard focus everywhere (mouse clicks stay clean via :focus-visible). */
+a:focus-visible, button:focus-visible, [role="button"]:focus-visible, summary:focus-visible,
+input:focus-visible, select:focus-visible, textarea:focus-visible {
+  outline: 3px solid var(--secondary);
+  outline-offset: 2px;
+}
+.skip-link {
+  position: absolute; left: 8px; top: -48px; z-index: 1000;
+  background: var(--primary); color: #fff; padding: 8px 14px; border-radius: var(--radius);
+}
+.skip-link:focus { top: 8px; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
+}

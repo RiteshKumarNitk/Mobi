@@ -17,6 +17,12 @@
     "db:generate": "npm run db:generate -w @baba/api",
     "db:push": "npm run db:push -w @baba/api",
     "db:seed": "npm run db:seed -w @baba/api",
-    "db:reset": "npm run db:reset -w @baba/api"
+    "db:reset": "npm run db:reset -w @baba/api",
+    "db:migrate": "npm run db:migrate -w @baba/api",
+    "db:migrate:status": "npm run db:migrate:status -w @baba/api",
+    "test:e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.65.1"
   }
 }

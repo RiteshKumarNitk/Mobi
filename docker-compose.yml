@@ -4,27 +4,47 @@
 #
 # Required env (create a `.env` next to this file — see README):
 #   DATABASE_URL   your Neon (or any Postgres) connection string
-#   JWT_SECRET     a long random string
+#   JWT_SECRET     a random string of 32+ characters (openssl rand -hex 32)
+#   CORS_ORIGINS   comma-separated storefront + admin origins, e.g.
+#                  https://shop.example.com,https://admin.example.com  ('*' is refused in production)
+#   SITE_URL       public storefront URL, used for canonical links + sitemap
 #
 # Optional env:
 #   WEB_API_URL    public API base baked into the storefront (default http://localhost:4000/api)
 #   ADMIN_API_URL  public API base baked into the admin panel (default http://localhost:4000/api)
-#   CORS_ORIGINS   comma-separated allowed origins (default *)
 #   OTP_DEBUG      true to return OTP codes in API responses (dev only)
-#   RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET   for live payments
+#   RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET / RAZORPAY_WEBHOOK_SECRET   for online payments
+#                  (without keys online payment is DISABLED in production; COD still works)
+#   TRUST_PROXY    proxy hops in front of the API (e.g. 1 behind a single nginx)
 #
 # Local PostgreSQL for offline development (instead of Neon):
 #   docker compose --profile localdb up -d db
 #   DATABASE_URL=postgresql://baba:baba@localhost:5432/baba?schema=public
-#   npx prisma db push --schema apps/api/prisma/schema.prisma && npm run db:seed
+#   npx prisma migrate deploy --schema apps/api/prisma/schema.prisma && npm run db:seed
+#
+# Schema changes are applied by the one-shot `migrate` service (prisma migrate
+# deploy — reviewed, versioned migrations; never `db push` against production).
 
 services:
+  migrate:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    image: baba-api:latest
+    command: ["npx", "prisma", "migrate", "deploy", "--schema", "apps/api/prisma/schema.prisma"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env}
+    restart: "no"
+
   api:
     build:
       context: .
       dockerfile: apps/api/Dockerfile
     image: baba-api:latest
     restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
     ports:
       - "4000:4000"
     environment:
@@ -35,9 +55,12 @@ services:
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-1h}
       JWT_REFRESH_EXPIRES_IN: ${JWT_REFRESH_EXPIRES_IN:-30d}
       OTP_DEBUG: ${OTP_DEBUG:-false}
-      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+      CORS_ORIGINS: ${CORS_ORIGINS:?set CORS_ORIGINS in .env}
+      TRUST_PROXY: ${TRUST_PROXY:-}
       RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID:-}
       RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET:-}
+      RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:-}
+      SMS_PROVIDER: ${SMS_PROVIDER:-}
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:4000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
@@ -51,8 +74,12 @@ services:
       dockerfile: apps/web/Dockerfile
       args:
         NEXT_PUBLIC_API_URL: ${WEB_API_URL:-http://localhost:4000/api}
+        NEXT_PUBLIC_SITE_URL: ${SITE_URL:-http://localhost:3000}
     image: baba-web:latest
     restart: unless-stopped
+    environment:
+      # Server-side (metadata/sitemap) API base, reachable inside the compose network
+      API_INTERNAL_URL: http://api:4000/api
     ports:
       - "3000:3000"
     depends_on:

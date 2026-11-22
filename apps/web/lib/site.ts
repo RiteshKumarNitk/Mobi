@@ -1,0 +1,25 @@
+/** Public site settings shared by metadata, robots and sitemap (server-safe). */
+export const SITE_NAME = "Baba Communication";
+export const SITE_URL = (process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000").replace(/\/$/, "");
+
+/**
+ * Base URL the Next.js *server* uses to reach the API (metadata, sitemap).
+ * Inside Docker/Kubernetes this is usually an internal hostname, so it can
+ * differ from the browser-facing NEXT_PUBLIC_API_URL.
+ */
+export const SERVER_API_URL = (process.env.API_INTERNAL_URL ?? process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000/api").replace(/\/$/, "");
+
+/** Server-side fetch of public API data; returns null on any failure (never breaks rendering/builds). */
+export async function fetchPublic<T>(path: string, revalidateSeconds = 300): Promise<T | null> {
+  try {
+    const res = await fetch(`${SERVER_API_URL}${path}`, { next: { revalidate: revalidateSeconds }, signal: AbortSignal.timeout(5000) });
+    if (!res.ok) return null;
+    const json = await res.json();
+    return json?.success ? (json.data as T) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Private, per-user pages that must never be indexed. */
+export const NOINDEX = { robots: { index: false, follow: false } } as const;

@@ -10,6 +10,7 @@ import { validate } from "../../middleware/validate";
 import { parseCsv } from "../../lib/csv";
 import { logActivity } from "../../lib/activity";
 import { lowStockThreshold } from "../../lib/settings";
+import { stockStatusFor } from "../../lib/stock";
 
 export const adminCatalogRouter = Router();
 
@@ -17,20 +18,20 @@ export const adminCatalogRouter = Router();
 // Products
 // ---------------------------------------------------------------------------
 
-const productSchema = z.object({
-  name: z.string().min(2),
-  sku: z.string().optional(),
+const productBase = z.object({
+  name: z.string().trim().min(2).max(200),
+  sku: z.string().trim().max(64).regex(/^[A-Za-z0-9._-]*$/, "SKU may contain letters, digits, . _ - only").optional(),
   categoryId: z.string().uuid().nullable().optional(),
   brandId: z.string().uuid().nullable().optional(),
-  price: z.number().positive(),
-  mrp: z.number().positive().optional(),
+  price: z.number().positive().max(10_000_000),
+  mrp: z.number().positive().max(10_000_000).optional(),
   costPrice: z.number().nonnegative().optional(),
   boxPrice: z.number().positive().nullable().optional(),
   boxQuantity: z.number().int().min(1).nullable().optional(),
   hsnCode: z.string().max(16).nullable().optional(),
-  stockQuantity: z.number().int().min(0).default(0),
-  description: z.string().optional(),
-  shortDescription: z.string().optional(),
+  stockQuantity: z.number().int().min(0).max(10_000_000).default(0),
+  description: z.string().max(20_000).optional(),
+  shortDescription: z.string().max(1000).optional(),
   weight: z.number().positive().optional(),
   dimensions: z.string().optional(),
   isFeatured: z.boolean().optional(),
@@ -41,11 +42,25 @@ const productSchema = z.object({
   metaDescription: z.string().optional(),
   metaKeywords: z.string().optional(),
   images: z.array(z.string().url()).max(8).optional(),
-  attributes: z.array(z.object({ name: z.string(), value: z.string() })).optional(),
-  tags: z.array(z.string()).optional(),
+  attributes: z.array(z.object({ name: z.string().max(100), value: z.string().max(500) })).max(50).optional(),
+  tags: z.array(z.string().trim().min(1).max(50)).max(30).optional(),
 });
 
-const stockStatusFor = (qty: number) => (qty > 10 ? "in_stock" : qty > 0 ? "low_stock" : "out_of_stock");
+/** Bulk (box) pricing needs both fields, a box of 2+ units, and a box price not above the unit price. */
+function bulkPricingIssue(d: { price?: number; boxPrice?: number | null; boxQuantity?: number | null }): string | null {
+  const hasPrice = d.boxPrice != null;
+  const hasQty = d.boxQuantity != null;
+  if (hasPrice !== hasQty) return "Bulk pricing needs both boxPrice and boxQuantity (or neither)";
+  if (hasQty && d.boxQuantity! < 2) return "boxQuantity must be at least 2";
+  if (hasPrice && d.price != null && d.boxPrice! > d.price) return "boxPrice (per unit) cannot be higher than the regular price";
+  return null;
+}
+
+const productSchema = productBase.superRefine((d, ctx) => {
+  const issue = bulkPricingIssue(d);
+  if (issue) ctx.addIssue({ code: z.ZodIssueCode.custom, message: issue, path: ["boxPrice"] });
+});
+
 
 async function ensureUniqueSlug(base: string): Promise<string> {
   const slug = slugify(base);
@@ -92,6 +107,7 @@ adminCatalogRouter.post(
     const d = req.body;
     const sku = d.sku?.trim() || genSku();
     const slug = await ensureUniqueSlug(d.name);
+    const lowStock = await lowStockThreshold();
     const product = await prisma.product.create({
       data: {
         name: d.name,
@@ -106,7 +122,7 @@ adminCatalogRouter.post(
         boxQuantity: d.boxQuantity ?? null,
         hsnCode: d.hsnCode ?? null,
         stockQuantity: d.stockQuantity,
-        stockStatus: stockStatusFor(d.stockQuantity) as any,
+        stockStatus: stockStatusFor(d.stockQuantity, lowStock),
         description: d.description ?? null,
         shortDescription: d.shortDescription ?? null,
         weight: d.weight ?? null,
@@ -135,11 +151,19 @@ adminCatalogRouter.put(
   "/products/:id",
   adminRequired,
   can("products.edit"),
-  validate(productSchema.partial()),
+  validate(productBase.partial()),
   asyncH(async (req, res) => {
     const existing = await prisma.product.findUnique({ where: { id: req.params.id } });
     if (!existing) throw NotFound("Product not found");
     const d = req.body;
+    const merged = {
+      price: d.price ?? Number(existing.price),
+      boxPrice: d.boxPrice !== undefined ? d.boxPrice : existing.boxPrice != null ? Number(existing.boxPrice) : null,
+      boxQuantity: d.boxQuantity !== undefined ? d.boxQuantity : existing.boxQuantity,
+    };
+    const bulkIssue = bulkPricingIssue(merged);
+    if (bulkIssue) throw BadRequest(bulkIssue, "VALIDATION");
+    const lowStock = await lowStockThreshold();
     const data: any = {};
     const scalarKeys = [
       "name", "sku", "categoryId", "brandId", "price", "mrp", "costPrice",
@@ -148,7 +172,7 @@ adminCatalogRouter.put(
       "isBestSeller", "status", "metaTitle", "metaDescription", "metaKeywords",
     ];
     for (const k of scalarKeys) if (d[k] !== undefined) data[k] = d[k];
-    if (d.stockQuantity !== undefined) data.stockStatus = stockStatusFor(d.stockQuantity) as any;
+    if (d.stockQuantity !== undefined) data.stockStatus = stockStatusFor(d.stockQuantity, lowStock);
     if (d.categoryId === null) data.categoryId = null;
     if (d.brandId === null) data.brandId = null;
 
@@ -172,11 +196,18 @@ adminCatalogRouter.put(
           data: { tags: { connectOrCreate: d.tags.map((t: string) => ({ where: { name: t }, create: { name: t } })) } },
         });
       }
-      return tx.product.update({
+      const updated = await tx.product.update({
         where: { id: existing.id },
         data,
         include: { images: true, brand: true, category: true },
       });
+      // Direct stock edits are recorded in the inventory history like any other adjustment.
+      if (d.stockQuantity !== undefined && d.stockQuantity !== existing.stockQuantity) {
+        await tx.inventoryLog.create({
+          data: { productId: existing.id, change: d.stockQuantity - existing.stockQuantity, type: "adjustment", reason: "Product edit", quantityAfter: d.stockQuantity, userId: (req as any).user.id },
+        });
+      }
+      return updated;
     });
     await logActivity(req, "product.update", "product", product.id);
     cacheBustAll();
@@ -208,24 +239,40 @@ adminCatalogRouter.post(
     const rows = parseCsv(csv);
     if (!rows.length) throw BadRequest("CSV is empty or missing a header row");
 
+    if (rows.length > 5000) throw BadRequest("CSV has too many rows (max 5000 per import)");
+
     let created = 0;
     let updated = 0;
     let failed = 0;
     const errors: string[] = [];
+    const lowStock = await lowStockThreshold();
+    const num = (v: string | undefined) => (v == null || v.trim() === "" ? null : Number(v));
 
-    for (const row of rows) {
+    for (const [index, row] of rows.entries()) {
+      const rowNo = index + 2; // +1 header, +1 human numbering
       try {
-        const name = row["name"];
-        const sku = row["sku"];
-        const price = Number(row["price"]);
-        if (!name || !sku || !Number.isFinite(price)) {
+        const name = (row["name"] ?? "").trim();
+        const sku = (row["sku"] ?? "").trim();
+        const price = num(row["price"]);
+        const mrp = num(row["mrp"]);
+        const stockQuantity = num(row["stockquantity"] ?? row["stock"]) ?? 0;
+        const boxQuantity = num(row["boxquantity"]);
+        const boxPrice = num(row["boxprice"]);
+        const problems: string[] = [];
+        if (name.length < 2 || name.length > 200) problems.push("name must be 2-200 characters");
+        if (!/^[A-Za-z0-9._-]{1,64}$/.test(sku)) problems.push("sku is missing or invalid");
+        if (price == null || !Number.isFinite(price) || price <= 0) problems.push("price must be a positive number");
+        if (mrp != null && (!Number.isFinite(mrp) || mrp <= 0)) problems.push("mrp must be a positive number");
+        if (!Number.isInteger(stockQuantity) || stockQuantity < 0) problems.push("stockQuantity must be a whole number >= 0");
+        if (boxQuantity != null && !Number.isInteger(boxQuantity)) problems.push("boxQuantity must be a whole number");
+        if (boxPrice != null && (!Number.isFinite(boxPrice) || boxPrice <= 0)) problems.push("boxPrice must be a positive number");
+        const bulk = problems.length ? null : bulkPricingIssue({ price: price!, boxPrice, boxQuantity });
+        if (bulk) problems.push(bulk);
+        if (problems.length) {
           failed++;
-          errors.push(`Row missing name/sku/price: ${JSON.stringify(row).slice(0, 120)}`);
+          errors.push(`Row ${rowNo}: ${problems.join("; ")}`);
           continue;
         }
-        const stockQuantity = Number(row["stockquantity"] ?? row["stock"] ?? 0);
-        const boxQuantity = row["boxquantity"] ? Number(row["boxquantity"]) : null;
-        const boxPrice = row["boxprice"] ? Number(row["boxprice"]) : null;
         let brandId: string | null = null;
         if (row["brand"]) {
           const brand = await prisma.brand.findUnique({ where: { slug: slugify(row["brand"]) } });
@@ -241,16 +288,16 @@ adminCatalogRouter.post(
         if (existing) {
           await prisma.product.update({
             where: { id: existing.id },
-            data: { name, price, mrp: row["mrp"] ? Number(row["mrp"]) : null, stockQuantity, brandId, categoryId, description: row["description"] ?? null, ...bulkFields },
+            data: { name, price: price!, mrp, stockQuantity, stockStatus: stockStatusFor(stockQuantity, lowStock), brandId, categoryId, description: row["description"] ?? null, ...bulkFields },
           });
           updated++;
         } else {
           await prisma.product.create({
             data: {
-              name, sku, price,
-              mrp: row["mrp"] ? Number(row["mrp"]) : null,
+              name, sku, price: price!,
+              mrp,
               stockQuantity,
-              stockStatus: stockStatusFor(stockQuantity) as any,
+              stockStatus: stockStatusFor(stockQuantity, lowStock),
               brandId, categoryId,
               description: row["description"] ?? null,
               ...bulkFields,
@@ -261,7 +308,7 @@ adminCatalogRouter.post(
         }
       } catch (e: any) {
         failed++;
-        errors.push(e.message);
+        errors.push(`Row ${rowNo}: ${e?.code === "P2002" ? "duplicate slug/sku" : "could not be saved"}`);
       }
     }
     await logActivity(req, "product.import", "product");
@@ -274,14 +321,15 @@ adminCatalogRouter.post(
 // Categories
 // ---------------------------------------------------------------------------
 
+const slugSchema = z.string().trim().max(120).regex(/^[a-z0-9-]*$/, "Slug may contain lowercase letters, digits and dashes");
 const categorySchema = z.object({
-  name: z.string().min(2),
-  slug: z.string().optional(),
-  description: z.string().optional(),
+  name: z.string().trim().min(2).max(120),
+  slug: slugSchema.optional(),
+  description: z.string().max(2000).optional(),
   parentId: z.string().uuid().nullable().optional(),
-  imageUrl: z.string().optional(),
+  imageUrl: z.string().url().max(1000).optional().or(z.literal("")),
   displayOrder: z.number().int().optional(),
-  status: z.string().optional(),
+  status: z.enum(["active", "inactive"]).optional(),
 });
 
 adminCatalogRouter.get(
@@ -326,6 +374,7 @@ adminCatalogRouter.put(
   can("products.edit"),
   validate(categorySchema.partial()),
   asyncH(async (req, res) => {
+    if (req.body.parentId && req.body.parentId === req.params.id) throw BadRequest("A category cannot be its own parent");
     const category = await prisma.category.update({ where: { id: req.params.id }, data: req.body });
     await logActivity(req, "category.update", "category", category.id);
     cacheBustAll();
@@ -350,13 +399,13 @@ adminCatalogRouter.delete(
 // ---------------------------------------------------------------------------
 
 const brandSchema = z.object({
-  name: z.string().min(2),
-  slug: z.string().optional(),
-  description: z.string().optional(),
-  logoUrl: z.string().optional(),
-  website: z.string().optional(),
+  name: z.string().trim().min(2).max(120),
+  slug: slugSchema.optional(),
+  description: z.string().max(2000).optional(),
+  logoUrl: z.string().url().max(1000).optional().or(z.literal("")),
+  website: z.string().url().max(1000).optional().or(z.literal("")),
   displayOrder: z.number().int().optional(),
-  status: z.string().optional(),
+  status: z.enum(["active", "inactive"]).optional(),
 });
 
 adminCatalogRouter.get(
@@ -470,27 +519,35 @@ adminCatalogRouter.put(
         .array(
           z.object({
             productId: z.string().uuid(),
-            quantity: z.number().int().min(0),
+            quantity: z.number().int().min(0).max(10_000_000),
             type: z.enum(["stock_in", "stock_out", "adjustment"]),
-            reason: z.string().optional(),
+            reason: z.string().max(500).optional(),
           })
         )
-        .min(1),
+        .min(1)
+        .max(500),
     })
   ),
   asyncH(async (req, res) => {
     const userId = (req as any).user.id;
+    const lowStock = await lowStockThreshold();
     const results = await prisma.$transaction(async (tx) => {
       const out = [];
       for (const item of req.body.items) {
-        const product = await tx.product.findUnique({ where: { id: item.productId } });
-        if (!product) throw NotFound(`Product ${item.productId} not found`);
-        const delta =
-          item.type === "stock_in" ? item.quantity : item.type === "stock_out" ? -item.quantity : item.quantity - product.stockQuantity;
-        const quantityAfter = Math.max(0, product.stockQuantity + delta);
+        // Row lock: concurrent checkouts / adjustments on this product wait for us,
+        // so the "set to N" adjustment and the logged delta are exact.
+        const locked = await tx.$queryRaw<{ stockQuantity: number; name: string }[]>`SELECT "stockQuantity", name FROM "Product" WHERE id = ${item.productId} FOR UPDATE`;
+        if (!locked.length) throw NotFound(`Product ${item.productId} not found`);
+        const current = locked[0].stockQuantity;
+        const delta = item.type === "stock_in" ? item.quantity : item.type === "stock_out" ? -item.quantity : item.quantity - current;
+        const quantityAfter = current + delta;
+        if (quantityAfter < 0) {
+          // Previously clamped to 0 silently, which corrupted the audit trail.
+          throw BadRequest(`Cannot remove ${item.quantity} of "${locked[0].name}": only ${current} in stock`, "INSUFFICIENT_STOCK");
+        }
         await tx.product.update({
           where: { id: item.productId },
-          data: { stockQuantity: quantityAfter, stockStatus: stockStatusFor(quantityAfter) as any },
+          data: { stockQuantity: quantityAfter, stockStatus: stockStatusFor(quantityAfter, lowStock) },
         });
         await tx.inventoryLog.create({
           data: { productId: item.productId, change: delta, type: item.type, reason: item.reason ?? null, quantityAfter, userId },
@@ -510,7 +567,9 @@ adminCatalogRouter.get(
   "/inventory/history",
   adminRequired,
   asyncH(async (req, res) => {
+    const productId = typeof req.query.productId === "string" && /^[0-9a-f-]{36}$/i.test(req.query.productId) ? req.query.productId : undefined;
     const logs = await prisma.inventoryLog.findMany({
+      where: productId ? { productId } : {},
       include: { product: { select: { name: true, sku: true } } },
       orderBy: { createdAt: "desc" },
       take: 100,

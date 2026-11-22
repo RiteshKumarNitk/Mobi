@@ -1,6 +1,6 @@
 # Baba Communication storefront (Next.js) — production image
 # Build: docker build -f apps/web/Dockerfile --build-arg NEXT_PUBLIC_API_URL=https://api.example.com/api -t baba-web .
-FROM node:20-slim AS base
+FROM node:22-slim AS base
 WORKDIR /app
 
 # ---- deps ----
@@ -15,6 +15,8 @@ RUN npm ci
 FROM base AS builder
 ARG NEXT_PUBLIC_API_URL=http://localhost:4000/api
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+ARG NEXT_PUBLIC_SITE_URL=http://localhost:3000
+ENV NEXT_PUBLIC_SITE_URL=$NEXT_PUBLIC_SITE_URL
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run build -w @baba/web

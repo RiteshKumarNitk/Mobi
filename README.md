@@ -18,7 +18,7 @@ similar in business capability to CellSpare.com:
 | Admin panel | Next.js 15 (App Router) |
 | Android app | Flutter 3 (Dart) + webview_flutter (in-app browser) |
 | Auth | JWT (access + rotating refresh) + OTP (5 min expiry) |
-| Payments | Razorpay (mock mode without keys) |
+| Payments | Razorpay Checkout + signed webhooks (dev-only mock without keys; **disabled**, COD-only, in production without keys) |
 | Hosting (prod) | Any cloud; `docker-compose.yml` runs the full stack (API + web + admin) |
 
 ## Quick Start
@@ -31,8 +31,8 @@ npm install
 
 # 2. Point the API at your Postgres database
 #    Put your Neon (or any Postgres) connection string in apps/api/.env as DATABASE_URL,
-#    then create the tables and seed the demo catalog:
-npm run db:push
+#    then apply the versioned migrations and seed the demo catalog (dev DBs only):
+npm run db:migrate
 npm run db:seed
 
 # 3. Run all three apps (three terminals, or use your own process manager)
@@ -43,15 +43,18 @@ npm run dev:admin  # http://localhost:3001   (Admin panel)
 
 The API prints every request; `/health` reports liveness.
 
-### Demo accounts (seeded)
+### Demo accounts (seeded — development only)
+
+> These passwords are public. The seed refuses to run with `NODE_ENV=production`, and the API rejects these passwords at login in production. See `docs/DEPLOYMENT_CHECKLIST.md`.
 
 | Role | Phone | Password |
 |---|---|---|
 | Super Admin | `9999999999` | `Admin@123` |
 | Customer (shop) | `8888888888` | `Customer@123` |
 
-**OTP in dev:** with `OTP_DEBUG=true` (default), the generated OTP is returned in the API
-response (`debugCode`) and shown on the register/forgot screens, so registration works without an SMS gateway.
+**OTP in dev:** with `OTP_DEBUG=true` (default outside production), the generated OTP is returned in the API
+response (`debugCode`) and shown on the register/login/forgot screens, so registration works without an SMS gateway.
+`OTP_DEBUG` is forced off in production — a real SMS provider is required there (not integrated yet; see `docs/KNOWN_LIMITATIONS.md`).
 
 ### Useful scripts (run from repo root)
 
@@ -61,9 +64,11 @@ npm run dev:web      # storefront on :3000
 npm run dev:admin    # admin on :3001
 npm run build        # build all three workspaces
 npm run typecheck    # tsc --noEmit across all workspaces
-npm run db:push      # apply Prisma schema to the DB
-npm run db:seed      # reset demo data (idempotent)
-npm run db:reset     # wipe + re-seed
+npm run db:migrate   # apply versioned migrations (prisma migrate deploy) — use this in production
+npm run db:migrate:status
+npm run db:seed      # demo data (idempotent; refuses NODE_ENV=production)
+npm run db:reset     # wipe + re-seed (dev only; refuses NODE_ENV=production)
+npm run test:e2e     # Playwright browser tests (needs API + web running)
 ```
 
 API tests (Vitest + Supertest against the live database — register/login, admin
@@ -72,6 +77,13 @@ coupons; self-cleaning):
 
 ```bash
 npm test                          # run the API test suite (Vitest + Supertest)
+```
+
+Browser E2E (Playwright; API + storefront must be running, dev DB only):
+
+```bash
+npx playwright install chromium   # once
+E2E_WEB_URL=http://localhost:3000 npm run test:e2e
 ```
 
 API smoke test (requires the API running):
@@ -90,7 +102,7 @@ npx k6 run -e API_URL=https://api.example.com/api apps/api/scripts/load-test.js
 Interactive API reference (Swagger UI — served by the API itself):
 
 ```
-http://localhost:4000/api/docs      # rendered docs
+http://localhost:4000/api/docs      # rendered docs (disabled in production unless API_DOCS_ENABLED=true)
 http://localhost:4000/api/docs.json # OpenAPI 3.0 spec (JSON)
 ```
 
@@ -172,10 +184,13 @@ All configuration lives in `apps/api/.env` (copy from `.env.example`). The web a
 | Variable | Purpose |
 |---|---|
 | `DATABASE_URL` | Postgres connection string, e.g. a Neon serverless URL (`postgresql://…neon.tech/…`) |
-| `JWT_SECRET` | **Change in production** |
-| `OTP_DEBUG` | `true` returns OTP codes in responses (dev only) |
-| `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET` | Leave empty for mock payments; add for real Razorpay |
-| `CORS_ORIGINS` | `*` or comma-separated list |
+| `JWT_SECRET` | 32+ random chars; production refuses to boot otherwise |
+| `OTP_DEBUG` | `true` returns OTP codes in responses (ignored in production) |
+| `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET` / `RAZORPAY_WEBHOOK_SECRET` | Empty = mock gateway in dev, online payment disabled in production |
+| `CORS_ORIGINS` | Comma-separated origins (`*` refused in production) |
+| `TRUST_PROXY` | Proxy hops in front of the API (e.g. `1`) |
+
+Full production list: `docs/DEPLOYMENT_CHECKLIST.md`.
 
 ### Database (Neon PostgreSQL)
 
@@ -183,8 +198,8 @@ The schema uses the `postgresql` provider. Put your Neon connection string in `a
 as `DATABASE_URL`, then:
 
 ```bash
-npm run db:push   # create/update tables
-npm run db:seed   # demo catalog + admin/customer accounts (idempotent)
+npm run db:migrate   # create/update tables via versioned migrations
+npm run db:seed      # demo catalog + admin/customer accounts (idempotent, dev only)
 ```
 
 ### Docker
@@ -208,17 +223,19 @@ docker compose --profile localdb up -d db
 The API image runs `prisma generate` + compiles TypeScript, then runs `node dist/index.js`
 with `NODE_ENV=production` (the production boot guard refuses the default JWT secret).
 The web/admin images bake `NEXT_PUBLIC_API_URL` at build time (build arg; defaults to
-`http://localhost:4000/api`). Image builds are unverified on this machine (no Docker CLI
-here) but follow the standard multi-stage pattern.
+`http://localhost:4000/api`). A one-shot `migrate` service applies migrations before the API starts.
+Image builds have not been verified yet (see `docs/KNOWN_LIMITATIONS.md`).
 
 ### CI/CD
 
-`.github/workflows/ci.yml` runs on every push/PR to `main`: typecheck → build for all
-three workspaces, plus the API test suite when the `DATABASE_URL` / `JWT_SECRET`
-secrets are configured (a Neon branch works well as a test database; the suite is
-self-cleaning).
+`.github/workflows/ci.yml` runs on every push to `master`/`main` and every PR: typecheck → build →
+production dependency audit, plus the API test suite against a disposable Postgres service
+(migrations + seed). No secrets needed; tests never run against a shared database.
 
 ### Going live checklist
+
+The complete, current list is in **`docs/DEPLOYMENT_CHECKLIST.md`** (audit results: `docs/PRODUCTION_AUDIT.md`).
+
 - [ ] Change `JWT_SECRET`, set `OTP_DEBUG=false`, add real Razorpay keys
 - [ ] Point the app at the deployed store: `--dart-define=APP_URL=https://…`
 - [ ] Wire up an SMS gateway for OTPs (`src/lib/otp.ts`) and SMTP for emails (`src/lib/mailer.ts`)

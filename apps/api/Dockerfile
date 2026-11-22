@@ -1,6 +1,6 @@
 # Baba Communication API — production image
 # Build: docker build -f apps/api/Dockerfile -t baba-api .
-FROM node:20-slim AS base
+FROM node:22-slim AS base
 WORKDIR /app
 # Prisma requires openssl at runtime
 RUN apt-get update -y \

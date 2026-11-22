@@ -2,7 +2,8 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma";
 import { asyncH } from "../lib/async";
-import { Forbidden, NotFound } from "../lib/errors";
+import { Conflict, Forbidden, NotFound } from "../lib/errors";
+import { rateLimit } from "../lib/rateLimit";
 import { authRequired, isAdminRole } from "../middleware/auth";
 import { validate } from "../middleware/validate";
 
@@ -15,11 +16,13 @@ productReviewsRouter.get(
   asyncH(async (req, res) => {
     const { rating } = req.query;
     const where: any = { productId: req.params.id, status: "approved" };
-    if (rating) where.rating = Number(rating);
+    const r = Number(rating);
+    if (rating && Number.isInteger(r) && r >= 1 && r <= 5) where.rating = r;
     const reviews = await prisma.review.findMany({
       where,
-      include: { user: true },
+      include: { user: { select: { firstName: true, lastName: true, shopName: true } } },
       orderBy: { createdAt: "desc" },
+      take: 50,
     });
     const agg = await prisma.review.aggregate({
       where: { productId: req.params.id, status: "approved" },
@@ -53,6 +56,7 @@ productReviewsRouter.get(
 productReviewsRouter.post(
   "/:id/reviews",
   authRequired,
+  rateLimit({ max: 10 }),
   validate(
     z.object({
       rating: z.number().int().min(1).max(5),
@@ -63,7 +67,12 @@ productReviewsRouter.post(
   ),
   asyncH(async (req, res) => {
     const product = await prisma.product.findUnique({ where: { id: req.params.id } });
-    if (!product) throw NotFound("Product not found");
+    if (!product || product.status !== "active") throw NotFound("Product not found");
+    const userId = (req as any).user.id;
+    // One review per customer per product (edit the existing one instead).
+    if (await prisma.review.findFirst({ where: { productId: product.id, userId } })) {
+      throw Conflict("You have already reviewed this product");
+    }
     const review = await prisma.review.create({
       data: {
         productId: product.id,

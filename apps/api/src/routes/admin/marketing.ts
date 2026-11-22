@@ -2,7 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../../lib/prisma";
 import { asyncH } from "../../lib/async";
-import { NotFound } from "../../lib/errors";
+import { BadRequest, NotFound } from "../../lib/errors";
 import { adminRequired, can } from "../../middleware/auth";
 import { validate } from "../../middleware/validate";
 import { logActivity } from "../../lib/activity";
@@ -15,20 +15,39 @@ adminMarketingRouter.use(adminRequired);
 // Coupons
 // ---------------------------------------------------------------------------
 
-const couponSchema = z.object({
-  code: z.string().min(2).transform((s) => s.toUpperCase()),
+const dateString = z.string().refine((s) => !Number.isNaN(Date.parse(s)), "Invalid date");
+
+const couponBase = z.object({
+  code: z
+    .string()
+    .trim()
+    .min(2)
+    .max(32)
+    .regex(/^[A-Za-z0-9_-]+$/, "Coupon code may contain letters, digits, _ and - only")
+    .transform((s) => s.toUpperCase()),
   type: z.enum(["percentage", "fixed"]),
-  value: z.number().positive(),
+  value: z.number().positive().max(10_000_000),
   minOrderAmount: z.number().min(0).default(0),
-  maxDiscountAmount: z.number().min(0).optional(),
-  usageLimit: z.number().int().positive().optional(),
+  maxDiscountAmount: z.number().min(0).nullable().optional(),
+  usageLimit: z.number().int().positive().nullable().optional(),
   perUserLimit: z.number().int().positive().default(1),
-  startDate: z.string(),
-  endDate: z.string(),
-  description: z.string().optional(),
-  status: z.string().optional(),
-  applicableCategoryIds: z.array(z.string().uuid()).optional(),
-  applicableProductIds: z.array(z.string().uuid()).optional(),
+  startDate: dateString,
+  endDate: dateString,
+  description: z.string().max(500).optional(),
+  status: z.enum(["active", "inactive"]).optional(),
+  applicableCategoryIds: z.array(z.string().uuid()).max(200).optional(),
+  applicableProductIds: z.array(z.string().uuid()).max(500).optional(),
+});
+
+function couponIssue(d: { type?: string; value?: number; startDate?: string; endDate?: string }): string | null {
+  if (d.type === "percentage" && d.value != null && d.value > 100) return "A percentage coupon cannot exceed 100%";
+  if (d.startDate && d.endDate && Date.parse(d.endDate) <= Date.parse(d.startDate)) return "endDate must be after startDate";
+  return null;
+}
+
+const couponSchema = couponBase.superRefine((d, ctx) => {
+  const issue = couponIssue(d);
+  if (issue) ctx.addIssue({ code: z.ZodIssueCode.custom, message: issue });
 });
 
 adminMarketingRouter.get(
@@ -84,11 +103,18 @@ adminMarketingRouter.post(
 adminMarketingRouter.put(
   "/coupons/:id",
   can("marketing.edit"),
-  validate(couponSchema.partial()),
+  validate(couponBase.partial()),
   asyncH(async (req, res) => {
     const existing = await prisma.coupon.findUnique({ where: { id: req.params.id } });
     if (!existing) throw NotFound("Coupon not found");
     const d = req.body;
+    const issue = couponIssue({
+      type: d.type ?? existing.type,
+      value: d.value ?? Number(existing.value),
+      startDate: d.startDate ?? existing.startDate.toISOString(),
+      endDate: d.endDate ?? existing.endDate.toISOString(),
+    });
+    if (issue) throw BadRequest(issue, "VALIDATION");
     const data: any = {};
     const keys = ["code", "type", "value", "minOrderAmount", "maxDiscountAmount", "usageLimit", "perUserLimit", "description", "status"];
     for (const k of keys) if (d[k] !== undefined) data[k] = d[k];
@@ -146,15 +172,23 @@ adminMarketingRouter.get(
 // Offers (banners of type "offers")
 // ---------------------------------------------------------------------------
 
+/** Only http(s) URLs or site-relative paths — never javascript:/data: (stored XSS on the storefront). */
+const safeHref = z
+  .string()
+  .trim()
+  .max(1000)
+  .refine((s) => s === "" || /^\/(?!\/)/.test(s) || /^https?:\/\//i.test(s), "Link must be a site path (/products) or an http(s) URL");
+const httpUrl = z.string().trim().url().max(1000).refine((s) => /^https?:\/\//i.test(s), "Must be an http(s) URL");
+
 const bannerSchema = z.object({
-  title: z.string().optional(),
-  subtitle: z.string().optional(),
-  imageUrl: z.string().url(),
-  linkUrl: z.string().optional(),
+  title: z.string().max(200).optional(),
+  subtitle: z.string().max(500).optional(),
+  imageUrl: httpUrl,
+  linkUrl: safeHref.optional(),
   displayOrder: z.number().int().optional(),
-  startDate: z.string().optional(),
-  endDate: z.string().optional(),
-  status: z.string().optional(),
+  startDate: dateString.optional(),
+  endDate: dateString.optional(),
+  status: z.enum(["active", "inactive"]).optional(),
 });
 
 const offerRouter = Router({ mergeParams: true });

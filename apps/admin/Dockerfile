@@ -1,6 +1,6 @@
 # Baba Communication admin panel (Next.js) — production image
 # Build: docker build -f apps/admin/Dockerfile --build-arg NEXT_PUBLIC_API_URL=https://api.example.com/api -t baba-admin .
-FROM node:20-slim AS base
+FROM node:22-slim AS base
 WORKDIR /app
 
 # ---- deps ----

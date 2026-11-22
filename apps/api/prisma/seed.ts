@@ -8,6 +8,10 @@
  */
 import bcrypt from "bcryptjs";
 import { PrismaClient } from "@prisma/client";
+import { assertNonProductionDb } from "../scripts/guard-destructive";
+
+// Demo accounts with published passwords must never be planted in a live database.
+assertNonProductionDb("seed demo data (known admin/customer passwords)");
 
 const prisma = new PrismaClient();
 

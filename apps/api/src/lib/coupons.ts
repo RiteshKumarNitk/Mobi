@@ -1,4 +1,5 @@
 import { prisma } from "./prisma";
+import type { Prisma } from "@prisma/client";
 import { round2 } from "./helpers";
 
 export function couponDiscount(coupon: { type: string; value: { toString(): string }; maxDiscountAmount: { toString(): string } | null }, subtotal: number): number {
@@ -34,14 +35,15 @@ export async function validateCoupon(
   return { valid: true, message: "", discount: couponDiscount(coupon, subtotal) };
 }
 
-/** Full validation used at order creation, including product/category applicability. */
+/** Full validation used at order creation, including product/category applicability.
+ *  `subtotal` must be the bulk-pricing-aware subtotal — the same figure the cart shows. */
 export async function validateCouponForOrder(
   coupon: any,
   userId: string,
   lines: { productId: string; quantity: number }[],
-  byId: Map<string, { price: any; categoryId: string | null }>
+  byId: Map<string, { categoryId: string | null }>,
+  subtotal: number
 ) {
-  const subtotal = lines.reduce((s, l) => s + Number(byId.get(l.productId)?.price ?? 0) * l.quantity, 0);
   const base = await validateCoupon(coupon, userId, subtotal);
   if (!base.valid) return base;
   if (coupon.applicableCategories?.length || coupon.applicableProducts?.length) {
@@ -51,7 +53,16 @@ export async function validateCouponForOrder(
       const p = byId.get(l.productId);
       return p && (prodIds.has(l.productId) || (p.categoryId && catIds.has(p.categoryId)));
     });
-    if (!applies) return { valid: false, message: "This coupon does not apply to the products in your cart", discount: 0 };
+    if (!applies) return { valid: false, message: 'This coupon does not apply to the products in your cart', discount: 0 };
   }
   return base;
+}
+
+/**
+ * Atomically count one redemption. Returns false when the global usage limit
+ * was reached by a concurrent order between validation and now.
+ */
+export async function redeemCoupon(tx: Prisma.TransactionClient, couponId: string): Promise<boolean> {
+  const n = await tx.$executeRaw`UPDATE "Coupon" SET "usedCount" = "usedCount" + 1 WHERE id = ${couponId} AND ("usageLimit" IS NULL OR "usedCount" < "usageLimit")`;
+  return n === 1;
 }
