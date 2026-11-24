@@ -6,13 +6,13 @@ similar in business capability to CellSpare.com:
 - 🛒 **Customer website** (Next.js) — browse, search, filter, cart, checkout, orders, returns, reviews, blog, FAQs
 - 📱 **Android app** (Flutter) — in-app browser that loads the website, so the storefront is maintained once and works identically on web and mobile
 - 🔐 **Admin panel** (Next.js) — dashboard, products, inventory, orders, customers, coupons, banners, CMS, settings, roles, logs
-- ⚙️ **REST API** (Node.js + Express + Prisma) — all business logic, JWT + OTP auth, Razorpay payments
+- ⚙️ **REST API** (Next.js Route Handlers + Prisma) — all business logic, JWT + OTP auth, Razorpay payments
 
 ## Tech Stack
 
 | Component | Technology |
 |---|---|
-| API | Node.js + Express + TypeScript |
+| API | Next.js 15 Route Handlers + TypeScript |
 | ORM / DB | Prisma + PostgreSQL (Neon, serverless) |
 | Customer website | Next.js 15 (App Router) |
 | Admin panel | Next.js 15 (App Router) |
@@ -35,13 +35,14 @@ npm install
 npm run db:migrate
 npm run db:seed
 
-# 3. Run all three apps (three terminals, or use your own process manager)
-npm run dev:api    # http://localhost:4000   (REST API)
-npm run dev:web    # http://localhost:3000   (Customer website)
+# 3. Copy apps/web/.env.example to apps/web/.env.local and set DATABASE_URL and JWT_SECRET.
+#    Set NEXT_PUBLIC_API_URL=http://localhost:3000/api in apps/admin/.env.local.
+#    Run these in separate terminals:
+npm run dev:web    # http://localhost:3000   (Customer website and REST API)
 npm run dev:admin  # http://localhost:3001   (Admin panel)
 ```
 
-The API prints every request; `/health` reports liveness.
+The storefront API reports database liveness at `/api/health`. Use `npm run dev:api` to run the legacy Express service on port 4000.
 
 ### Demo accounts (seeded — development only)
 
@@ -102,8 +103,8 @@ npx k6 run -e API_URL=https://api.example.com/api apps/api/scripts/load-test.js
 Interactive API reference (Swagger UI — served by the API itself):
 
 ```
-http://localhost:4000/api/docs      # rendered docs (disabled in production unless API_DOCS_ENABLED=true)
-http://localhost:4000/api/docs.json # OpenAPI 3.0 spec (JSON)
+http://localhost:3000/api/docs      # rendered docs (disabled in production unless API_DOCS_ENABLED=true)
+http://localhost:3000/api/docs.json # OpenAPI 3.0 spec (JSON)
 ```
 
 ### Android app (`mobile`)
@@ -124,9 +125,7 @@ flutter run --dart-define=APP_URL=http://10.0.2.2:3000
 flutter run --dart-define=APP_URL=https://your-store.example.com
 ```
 
-Start the website + API first (`npm run dev:web`, `npm run dev:api`) — the app is just
-a window into the site. For the emulator, the website must be able to reach the API
-from inside the emulator (`NEXT_PUBLIC_API_URL=http://10.0.2.2:4000/api` at web build time).
+Start the storefront with `npm run dev:web`. The Flutter WebView loads the site and its same-origin API. For native API calls, pass `--dart-define=API_URL=https://mobi-xi-six.vercel.app/api` for the deployed store or `--dart-define=API_URL=http://10.0.2.2:3000/api` for the emulator.
 
 ```bash
 cd mobile
@@ -153,19 +152,17 @@ Orders (filters, detail, status flow, cancel) · Customers (CRUD, activate/deact
 Banners & Offers · Returns (approve/reject/refund) · FAQs · CMS pages · System settings (grouped key-values) ·
 Roles & permissions · Activity logs (export).
 
-### API (`apps/api`) — 100+ endpoints
+### API (`apps/web/app/api`) — 100+ endpoints
 
 Performance & hardening:
 - **TTL cache** on all catalog reads (products, categories, brands, search suggest,
   banners) with `X-Cache: HIT/MISS` headers; invalidated automatically on every admin
-  write. In-memory now, Redis-swappable via `apps/api/src/lib/cache.ts`.
+  write. In-memory now, Redis-swappable via `apps/web/lib/cache.ts`.
 - **Database indexes** on hot queries (orders by user/status/date, products by
   category/brand/status, notifications, activity logs, OTP, reviews, returns,
   inventory logs).
-- **Observability** — every request gets an `X-Request-Id`; structured JSON request
-  logs (method, path, status, duration, IP, UA); `/health` pings the DB and reports
-  uptime.
-- **Security** — refuses to boot in production with the default JWT secret; OTP
+- **Observability** — API handlers include an `X-Request-Id`. The `/api/health` route pings the database and reports uptime.
+- **Security** — production handlers require a strong JWT secret; OTP
   send/resend rate-limited per phone+IP (prevents OTP bombing); `Retry-After` header
   on 429s.
 Auth (register, login, refresh, logout, me, forgot/reset password) · OTP (send/verify/resend) ·
@@ -178,17 +175,18 @@ orders, customers, marketing, CMS, settings, roles, permissions, logs, reports, 
 
 ## Configuration
 
-All configuration lives in `apps/api/.env` (copy from `.env.example`). The web and admin apps read
-`NEXT_PUBLIC_API_URL` from their own `.env.local`.
+Configure the storefront API in `apps/web/.env.local` for development and in the web project’s environment settings on Vercel. Use `apps/web/.env.example` as a starting point and keep the existing JWT signing key and database when moving the deployment.
+
+For `mobi-xi-six.vercel.app`, set `NEXT_PUBLIC_SITE_URL=https://mobi-xi-six.vercel.app` on the web project, `NEXT_PUBLIC_API_URL=https://mobi-xi-six.vercel.app/api` on the admin project, and `CORS_ORIGINS` on the web project to the admin browser origin. Point the Razorpay webhook at `https://mobi-xi-six.vercel.app/api/payments/razorpay/webhook`.
 
 | Variable | Purpose |
 |---|---|
 | `DATABASE_URL` | Postgres connection string, e.g. a Neon serverless URL (`postgresql://…neon.tech/…`) |
-| `JWT_SECRET` | 32+ random chars; production refuses to boot otherwise |
+| `JWT_SECRET` | 32+ random characters required for production API traffic |
 | `OTP_DEBUG` | `true` returns OTP codes in responses (ignored in production) |
 | `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET` / `RAZORPAY_WEBHOOK_SECRET` | Empty = mock gateway in dev, online payment disabled in production |
-| `CORS_ORIGINS` | Comma-separated origins (`*` refused in production) |
-| `TRUST_PROXY` | Proxy hops in front of the API (e.g. `1`) |
+| `CORS_ORIGINS` | Comma-separated origins or `*` for the storefront API |
+| `TRUST_PROXY` | Proxy trust setting for the legacy Express service |
 
 Full production list: `docs/DEPLOYMENT_CHECKLIST.md`.
 
@@ -222,8 +220,7 @@ docker compose --profile localdb up -d db
 
 The API image runs `prisma generate` + compiles TypeScript, then runs `node dist/index.js`
 with `NODE_ENV=production` (the production boot guard refuses the default JWT secret).
-The web/admin images bake `NEXT_PUBLIC_API_URL` at build time (build arg; defaults to
-`http://localhost:4000/api`). A one-shot `migrate` service applies migrations before the API starts.
+The admin image bakes in `NEXT_PUBLIC_API_URL`. Set `ADMIN_API_URL=http://localhost:3000/api` in the Compose environment to use the storefront API. A one-shot `migrate` service applies migrations before the web and legacy API services start.
 Image builds have not been verified yet (see `docs/KNOWN_LIMITATIONS.md`).
 
 ### CI/CD

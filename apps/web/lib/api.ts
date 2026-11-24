@@ -1,4 +1,4 @@
-export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000/api";
+export const API_URL = "/api";
 
 const TOKEN_KEY = "bc_token";
 const REFRESH_KEY = "bc_refresh";

@@ -4,10 +4,9 @@ export const SITE_URL = (process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3
 
 /**
  * Base URL the Next.js *server* uses to reach the API (metadata, sitemap).
- * Inside Docker/Kubernetes this is usually an internal hostname, so it can
- * differ from the browser-facing NEXT_PUBLIC_API_URL.
+ * API_INTERNAL_URL can point to an internal hostname in Docker or Kubernetes.
  */
-export const SERVER_API_URL = (process.env.API_INTERNAL_URL ?? process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000/api").replace(/\/$/, "");
+export const SERVER_API_URL = (process.env.API_INTERNAL_URL ?? (process.env.VERCEL_URL && !process.env.NEXT_PUBLIC_SITE_URL ? "https://" + process.env.VERCEL_URL + "/api" : SITE_URL + "/api")).replace(/\/$/, "");
 
 /** Server-side fetch of public API data; returns null on any failure (never breaks rendering/builds). */
 export async function fetchPublic<T>(path: string, revalidateSeconds = 300): Promise<T | null> {
