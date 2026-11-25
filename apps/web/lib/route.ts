@@ -135,6 +135,8 @@ export function defineRoute(...steps: RouteArgs | [{ rawBody: true }, ...RouteAr
       }
       return await handler(req, res);
     } catch (error) {
+      // Never let a shared cache keep an error, even if the handler marked the response public.
+      res.setHeader("Cache-Control", "no-store");
       const known = requestError(error);
       if (known) return res.json({ success: false, error: { code: known.code, message: known.message } }, known.status);
       logger.error("unhandled_error", { requestId, path, method: request.method, error: String(error) });

@@ -35,7 +35,7 @@ test("guest cart -> register with OTP -> checkout (COD) -> confirmation", async 
   await page.getByRole("button", { name: "Add to Cart", exact: true }).click();
   await expect(page.getByRole("button", { name: /Added to cart/i }).first()).toBeVisible();
 
-  // 2. Register (debug OTP is displayed in dev mode)
+  // 2. Register (the OTP is displayed on screen while no SMS gateway is configured)
   const phone = uniquePhone();
   await page.goto("/register");
   await page.getByLabel("Full Name *").fill("E2E Shopkeeper");
@@ -44,7 +44,7 @@ test("guest cart -> register with OTP -> checkout (COD) -> confirmation", async 
   await page.getByLabel("Confirm Password *").fill("E2eTest1234");
   await page.locator("#reg-agree").check();
   await page.getByRole("button", { name: /Register & Get OTP/i }).click();
-  const otpBanner = page.getByText(/Dev mode: your OTP is/i);
+  const otpBanner = page.getByText(/Your verification code is/i);
   await expect(otpBanner).toBeVisible();
   const code = (await otpBanner.locator("strong").innerText()).trim();
   await page.getByLabel("Enter OTP").fill(code);

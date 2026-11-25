@@ -73,10 +73,21 @@ export const cache = {
 };
 
 /**
+ * CDN caching for public catalog reads (Vercel edge / any shared cache).
+ * Fresh for up to 60s, then served stale while one request refreshes it in the
+ * background, so visitors almost never wait on the database. Only use this on
+ * responses that are the same for every visitor (no per-user data).
+ */
+export const publicCacheControl = (ttlSeconds = 60) =>
+  `public, max-age=0, s-maxage=${Math.min(ttlSeconds, 60)}, stale-while-revalidate=600`;
+
+/**
  * Cache-aside read helper: returns the cached value, or builds + stores it on
- * a miss. Sets the X-Cache header on the response (HIT/MISS).
+ * a miss. Sets the X-Cache header on the response (HIT/MISS). Every caller is a
+ * public catalog/content read, so the response is also marked CDN-cacheable.
  */
 export async function cached<T>(key: string, ttlSeconds: number, build: () => Promise<T>, res?: { setHeader: (h: string, v: string) => unknown }): Promise<T> {
+  res?.setHeader("Cache-Control", publicCacheControl(ttlSeconds));
   const hit = cacheGet<T>(key);
   if (hit !== undefined) {
     res?.setHeader("X-Cache", "HIT");

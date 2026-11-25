@@ -1,10 +1,12 @@
 import { defineRoute } from "@/lib/route";
+import { publicCacheControl } from "@/lib/cache";
 import { prisma } from "../lib/prisma";
 import { NotFound } from "../lib/errors";
 
 // GET /api/offers - active offer banners + active coupons
 export const getOffers = defineRoute(
   async (_req, res) => {
+    res.setHeader("Cache-Control", publicCacheControl());
     const now = new Date();
     const [banners, coupons] = await Promise.all([
       prisma.banner.findMany({

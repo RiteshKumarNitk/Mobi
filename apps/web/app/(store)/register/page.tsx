@@ -57,7 +57,7 @@ export default function RegisterPage() {
         <div className="panel">
           <h1 style={{ marginTop: 0 }}>Verify OTP</h1>
           <p className="muted small">We sent a 6-digit code to <strong>+91 {form.phone}</strong>. It expires in 5 minutes.</p>
-          {debugCode && <div className="alert warn small">Dev mode: your OTP is <strong>{debugCode}</strong></div>}
+          {debugCode && <div className="alert warn small">Your verification code is <strong>{debugCode}</strong></div>}
           {error && <div className="form-error">{error}</div>}
           <form onSubmit={verify}>
             <label className="label" htmlFor="reg-otp">Enter OTP</label>

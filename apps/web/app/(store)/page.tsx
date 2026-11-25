@@ -20,27 +20,18 @@ export default function Home() {
   const [subscribed, setSubscribed] = useState(false);
 
   useEffect(() => {
+    // Each section renders as soon as its own data arrives, instead of the
+    // whole page waiting for the slowest request. A failed section stays empty.
+    const load = <T,>(path: string, apply: (data: T) => void) =>
+      api<T>(path).then(apply).catch(() => {});
+    load<any[]>("/banners/active", (b) => setBanners(b.filter((x: any) => x.type === "homepage")));
+    load<any[]>("/categories", (c) => setCategories(c.filter((x: any) => !x.parentId)));
+    load<ProductShape[]>("/products/featured", setFeatured);
+    load<ProductShape[]>("/products/trending", setTrending);
+    load<ProductShape[]>("/products/new", setNewArrivals);
+    load<any[]>("/brands", setBrands);
+    load<any>("/offers", (o) => setOffers(o.banners ?? []));
     (async () => {
-      try {
-        const [b, c, f, t, n, br, o] = await Promise.all([
-          api("/banners/active"),
-          api("/categories"),
-          api("/products/featured"),
-          api("/products/trending"),
-          api("/products/new"),
-          api("/brands"),
-          api("/offers"),
-        ]);
-        setBanners(b.filter((x: any) => x.type === "homepage"));
-        setCategories(c.filter((x: any) => !x.parentId));
-        setFeatured(f);
-        setTrending(t);
-        setNewArrivals(n);
-        setBrands(br);
-        setOffers(o.banners ?? []);
-      } catch {
-        /* ignore */
-      }
       // Recently viewed products (from this browser), kept in viewing order.
       const recentIds = getRecentIds();
       if (recentIds.length) {

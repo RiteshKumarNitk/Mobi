@@ -6,7 +6,6 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { api, safeNext } from "@/lib/api";
 import { useStore } from "@/lib/store";
 
-const SHOW_DEMO_HINT = process.env.NODE_ENV !== "production" || process.env.NEXT_PUBLIC_DEMO_MODE === "true";
 
 export default function LoginPage() {
   return (
@@ -79,7 +78,7 @@ function LoginInner() {
         <div className="panel">
           <h1 style={{ marginTop: 0 }}>Verify your number</h1>
           <p className="muted small">Enter the 6-digit code sent to <strong>+91 {phone}</strong>. It expires in 5 minutes.</p>
-          {debugCode && <div className="alert warn small">Dev mode: your OTP is <strong>{debugCode}</strong></div>}
+          {debugCode && <div className="alert warn small">Your verification code is <strong>{debugCode}</strong></div>}
           {error && <div className="form-error" role="alert">{error}</div>}
           <form onSubmit={verify}>
             <label className="label" htmlFor="otp">OTP</label>
@@ -125,7 +124,6 @@ function LoginInner() {
           New customer? <Link href="/register">Create an account</Link>
         </div>
       </div>
-      {SHOW_DEMO_HINT && <div className="center small muted mt-16">Demo customer login: 8888888888 / Customer@123</div>}
     </div>
   );
 }

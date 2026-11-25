@@ -26,11 +26,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en">
       <body>
         <a href="#main" className="skip-link">Skip to content</a>
-        {DEMO_MODE && (
-          <div role="note" style={{ background: "#fff3cd", color: "#664d03", textAlign: "center", fontSize: 13, padding: "6px 12px", borderBottom: "1px solid #ffe69c" }}>
-            Demo store for review — sample products and prices. Orders are not fulfilled and no payment is taken.
-          </div>
-        )}
         <Providers>
           <Header />
           <main id="main" className="container main">{children}</main>

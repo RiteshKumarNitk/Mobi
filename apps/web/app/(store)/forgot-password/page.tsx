@@ -63,7 +63,7 @@ export default function ForgotPasswordPage() {
           </form>
         ) : (
           <form onSubmit={reset}>
-            {debugCode && <div className="alert warn small">Dev mode: OTP is <strong>{debugCode}</strong></div>}
+            {debugCode && <div className="alert warn small">Your verification code is <strong>{debugCode}</strong></div>}
             {error && <div className="form-error">{error}</div>}
             <label className="label">OTP</label>
             <input className="input" maxLength={6} value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))} required />
