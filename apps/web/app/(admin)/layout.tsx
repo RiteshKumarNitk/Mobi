@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import AdminShell from "@/components/AdminShell";
+import AdminShell from "@/components/admin/AdminShell";
 
 export const metadata: Metadata = {
   title: "Baba Communication Admin",

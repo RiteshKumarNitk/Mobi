@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { api, getToken } from "@/lib/api";
+import { api, getToken } from "@/lib/adminApi";
 import { useRouter } from "next/navigation";
 
 export default function RolesPage() {
@@ -13,7 +13,7 @@ export default function RolesPage() {
   const [msg, setMsg] = useState("");
 
   useEffect(() => {
-    if (!getToken()) return router.push("/login");
+    if (!getToken()) return router.push("/admin/login");
     Promise.all([api("/admin/roles"), api("/admin/permissions")]).then(([r, p]) => {
       setRoles(r);
       setPermissions(p);

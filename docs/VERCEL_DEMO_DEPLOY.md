@@ -1,50 +1,42 @@
 # Deploying the client-review demo on Vercel
 
-The demo runs as **three Vercel projects from the same GitHub repo**, each with its own *Root Directory*. It uses the seeded demo data, takes **no payments** (Cash on Delivery only), and sends **no SMS**: OTPs are shown on screen.
+The whole demo is **one Vercel project**: the storefront (`apps/web`). It serves:
 
-| Project | Root Directory | Framework preset |
-|---|---|---|
-| `mobi-api` | `apps/api` | Other (settings come from `apps/api/vercel.json`) |
-| `mobi-web` | `apps/web` | Next.js |
-| `mobi-admin` | `apps/admin` | Next.js |
+| Path | What |
+|---|---|
+| `/` | Customer website |
+| `/admin` | Admin panel |
+| `/api` | REST API (Next.js route handlers) |
 
-Leave the build and install commands at their defaults. Vercel detects the npm workspace and installs from the repo root. Node.js version: 22.x (Project → Settings → General).
+The demo uses the seeded data, takes **no payments** (Cash on Delivery only), and sends **no SMS**: OTPs are shown on screen.
 
-## 1. API project (`apps/api`), deploy this first
-Environment variables (Production):
+## Project settings
+- Import the GitHub repo and set **Root Directory** to `apps/web`. The framework preset is **Next.js**.
+- Do **not** use "Import multi-service project". Do not create projects for `apps/api`; the Express API is only for local/Docker use and is not needed on Vercel.
+- Leave the build and install commands at their defaults (no overrides).
+- Node.js version: 22.x (Project → Settings → General).
+
+## Environment variables (Production)
 
 | Name | Value |
 |---|---|
 | `DATABASE_URL` | the Neon connection string (the demo database) |
-| `JWT_SECRET` | 64 random characters, e.g. the output of `openssl rand -hex 32` |
+| `JWT_SECRET` | 64+ random characters, e.g. `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"` |
 | `DEMO_MODE` | `true` |
-| `CORS_ORIGINS` | `https://mobi-web.vercel.app,https://mobi-admin.vercel.app,https://mobi-web-*.vercel.app,https://mobi-admin-*.vercel.app` (use your real project domains) |
-| `TRUST_PROXY` | `1` |
+| `NEXT_PUBLIC_DEMO_MODE` | `true` (shows the "demo store" banner and demo logins; blocks search-engine indexing) |
+| `NEXT_PUBLIC_SITE_URL` | `https://<your-project>.vercel.app` |
+| `CORS_ORIGINS` | the same `https://<your-project>.vercel.app` (the admin panel is same-origin, so nothing else is needed) |
 
-Deploy, then open `https://<api-domain>/health`. It should return `{"ok":true,...}`.
-The function region is Singapore (`sin1`), next to the Neon database.
+`NEXT_PUBLIC_*` values are fixed at build time, so **redeploy** after changing them.
+`NEXT_PUBLIC_API_URL` is no longer used. Delete it if it is still set.
 
-## 2. Storefront project (`apps/web`)
-
-| Name | Value |
-|---|---|
-| `NEXT_PUBLIC_API_URL` | `https://<api-domain>/api` |
-| `NEXT_PUBLIC_SITE_URL` | `https://<web-domain>` |
-| `NEXT_PUBLIC_DEMO_MODE` | `true` (shows the "demo store" banner and demo login; blocks search-engine indexing) |
-
-## 3. Admin project (`apps/admin`)
-
-| Name | Value |
-|---|---|
-| `NEXT_PUBLIC_API_URL` | `https://<api-domain>/api` |
-| `NEXT_PUBLIC_DEMO_MODE` | `true` |
-
-`NEXT_PUBLIC_*` values are fixed at build time. **Redeploy** after changing them.
-If a domain changes, update `CORS_ORIGINS` on the API and redeploy it too.
+After deploying, check:
+- `https://<your-project>.vercel.app/api/health` returns `{"ok":true,...}`
+- `https://<your-project>.vercel.app/admin` opens the admin login
 
 ## Demo logins (share with the client)
-- Storefront customer: `8888888888` / `Customer@123`
-- Admin panel: `9999999999` / `Admin@123`
+- Storefront customer (`/login`): `8888888888` / `Customer@123`
+- Admin panel (`/admin`): `9999999999` / `Admin@123`
 - New registrations work: the OTP is displayed on the screen.
 
 ## Resetting demo data

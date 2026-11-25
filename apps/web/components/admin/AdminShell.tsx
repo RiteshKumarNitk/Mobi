@@ -3,27 +3,28 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { api, getToken, setToken } from "@/lib/api";
+import { api, getToken, setToken } from "@/lib/adminApi";
 
 const NAV = [
-  ["/", "📊", "Dashboard"],
-  ["/products", "📦", "Products"],
-  ["/inventory", "🗃", "Inventory"],
-  ["/orders", "🧾", "Orders"],
-  ["/returns", "↩", "Returns"],
-  ["/customers", "👥", "Customers"],
-  ["/coupons", "🎟", "Coupons"],
-  ["/banners", "🖼", "Banners & Offers"],
-  ["/faqs", "❓", "FAQs"],
-  ["/pages", "📄", "Pages (CMS)"],
-  ["/settings", "⚙️", "Settings"],
-  ["/roles", "🔐", "Roles"],
-  ["/logs", "📜", "Activity Logs"],
+  ["/admin", "📊", "Dashboard"],
+  ["/admin/products", "📦", "Products"],
+  ["/admin/inventory", "🗃", "Inventory"],
+  ["/admin/orders", "🧾", "Orders"],
+  ["/admin/returns", "↩", "Returns"],
+  ["/admin/customers", "👥", "Customers"],
+  ["/admin/coupons", "🎟", "Coupons"],
+  ["/admin/banners", "🖼", "Banners & Offers"],
+  ["/admin/faqs", "❓", "FAQs"],
+  ["/admin/pages", "📄", "Pages (CMS)"],
+  ["/admin/settings", "⚙️", "Settings"],
+  ["/admin/roles", "🔐", "Roles"],
+  ["/admin/logs", "📜", "Activity Logs"],
 ];
 
+const LOGIN = "/admin/login";
 const ADMIN_ROLES = ["super_admin", "admin", "manager", "staff"];
 /** Sections the API restricts to super_admin/admin. */
-const OWNER_ONLY = new Set(["/settings", "/roles", "/logs"]);
+const OWNER_ONLY = new Set(["/admin/settings", "/admin/roles", "/admin/logs"]);
 const OWNER_ROLES = ["super_admin", "admin"];
 
 export default function AdminShell({ children }: { children: React.ReactNode }) {
@@ -33,9 +34,9 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
   const [checked, setChecked] = useState(false);
 
   useEffect(() => {
-    if (pathname === "/login") return;
+    if (pathname === LOGIN) return;
     if (!getToken()) {
-      router.replace("/login");
+      router.replace(LOGIN);
       return;
     }
     api("/auth/me")
@@ -43,19 +44,19 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
         const u = d?.user;
         if (!u || !ADMIN_ROLES.includes(u.role)) {
           setToken(null);
-          router.replace("/login");
+          router.replace(LOGIN);
           return;
         }
         setUser(u);
       })
       .catch(() => {
         setToken(null);
-        router.replace("/login");
+        router.replace(LOGIN);
       })
       .finally(() => setChecked(true));
   }, [pathname, router]);
 
-  if (pathname === "/login") return <>{children}</>;
+  if (pathname === LOGIN) return <>{children}</>;
 
   // Block the shell until the stored session has been validated, so a stale
   // token never flashes admin content.
@@ -65,7 +66,7 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
 
   const logout = () => {
     setToken(null);
-    router.push("/login");
+    router.push(LOGIN);
   };
 
   return (
@@ -113,7 +114,7 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
             {user ? `${user.firstName ?? "Admin"} · ${user.role}` : ""}
           </div>
           <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-            <Link href="/" className="btn sm secondary">Open Store</Link>
+            <a href="/" className="btn sm secondary">Open Store</a>
             <button className="btn sm danger" onClick={logout}>Logout</button>
           </div>
         </div>

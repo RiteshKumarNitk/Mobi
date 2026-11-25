@@ -36,10 +36,8 @@ npm run db:migrate
 npm run db:seed
 
 # 3. Copy apps/web/.env.example to apps/web/.env.local and set DATABASE_URL and JWT_SECRET.
-#    Set NEXT_PUBLIC_API_URL=http://localhost:3000/api in apps/admin/.env.local.
-#    Run these in separate terminals:
-npm run dev:web    # http://localhost:3000   (Customer website and REST API)
-npm run dev:admin  # http://localhost:3001   (Admin panel)
+npm run dev:web    # http://localhost:3000        (customer website + REST API at /api)
+                   # http://localhost:3000/admin  (admin panel)
 ```
 
 The storefront API reports database liveness at `/api/health`. Use `npm run dev:api` to run the legacy Express service on port 4000.
@@ -61,9 +59,8 @@ response (`debugCode`) and shown on the register/login/forgot screens, so regist
 
 ```bash
 npm run dev:api      # API with hot reload
-npm run dev:web      # storefront on :3000
-npm run dev:admin    # admin on :3001
-npm run build        # build all three workspaces
+npm run dev:web      # storefront on :3000 (admin at /admin)
+npm run build        # build both workspaces
 npm run typecheck    # tsc --noEmit across all workspaces
 npm run db:migrate   # apply versioned migrations (prisma migrate deploy) — use this in production
 npm run db:migrate:status
@@ -145,7 +142,7 @@ Account (orders, addresses, profile, notifications) · Order detail with progres
 reorder, cancel, returns · Guest order tracking · Brands · Categories · Offers · FAQs · Blog · Static pages ·
 Contact · Search results.
 
-### Admin panel (`apps/admin`)
+### Admin panel (`apps/web/app/(admin)`, served at `/admin`)
 Login · Dashboard (revenue, orders, stock, customers, 30-day sales chart, top products, status distribution,
 recent orders/customers) · Products (CRUD, flags, CSV bulk import) · Inventory (batch stock adjustments + history) ·
 Orders (filters, detail, status flow, cancel) · Customers (CRUD, activate/deactivate) · Coupons (CRUD, usage) ·
@@ -202,7 +199,7 @@ npm run db:seed      # demo catalog + admin/customer accounts (idempotent, dev o
 
 ### Docker
 
-The repo ships production `Dockerfile`s for all three apps plus a `docker-compose.yml`
+The repo ships production `Dockerfile`s for the API and the storefront plus a `docker-compose.yml`
 for the full stack. Docker is **not** required for development (see Quick Start above);
 this is for deploy or production-like local runs.
 
@@ -211,7 +208,7 @@ this is for deploy or production-like local runs.
 echo "DATABASE_URL=postgresql://…neon.tech/…" >> .env
 echo "JWT_SECRET=$(openssl rand -hex 32)" >> .env
 
-# 2. Build and start api (:4000) + web (:3000) + admin (:3001)
+# 2. Build and start api (:4000) + web (:3000, admin at /admin)
 docker compose up -d --build
 
 # Optional: local Postgres instead of Neon (offline dev)
@@ -220,7 +217,7 @@ docker compose --profile localdb up -d db
 
 The API image runs `prisma generate` + compiles TypeScript, then runs `node dist/index.js`
 with `NODE_ENV=production` (the production boot guard refuses the default JWT secret).
-The admin image bakes in `NEXT_PUBLIC_API_URL`. Set `ADMIN_API_URL=http://localhost:3000/api` in the Compose environment to use the storefront API. A one-shot `migrate` service applies migrations before the web and legacy API services start.
+A one-shot `migrate` service applies migrations before the web and legacy API services start.
 Image builds have not been verified yet (see `docs/KNOWN_LIMITATIONS.md`).
 
 ### CI/CD

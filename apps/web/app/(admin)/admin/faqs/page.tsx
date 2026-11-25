@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { api, getToken } from "@/lib/api";
+import { api, getToken } from "@/lib/adminApi";
 import { useRouter } from "next/navigation";
 
 const EMPTY = { question: "", answer: "", category: "General", displayOrder: "0", status: "active" };
@@ -15,7 +15,7 @@ export default function FaqsPage() {
   const [msg, setMsg] = useState("");
 
   useEffect(() => {
-    if (!getToken()) return router.push("/login");
+    if (!getToken()) return router.push("/admin/login");
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

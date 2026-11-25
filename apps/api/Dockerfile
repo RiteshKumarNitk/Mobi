@@ -12,7 +12,6 @@ FROM base AS deps
 COPY package.json package-lock.json* ./
 COPY apps/api/package.json apps/api/package.json
 COPY apps/web/package.json apps/web/package.json
-COPY apps/admin/package.json apps/admin/package.json
 COPY apps/api/prisma/schema.prisma apps/api/prisma/schema.prisma
 COPY apps/web/prisma/schema.prisma apps/web/prisma/schema.prisma
 RUN npm ci

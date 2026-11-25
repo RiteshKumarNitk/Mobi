@@ -1,4 +1,5 @@
-export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000/api";
+// The admin panel is served by the storefront app under /admin, so the API is same-origin.
+export const API_URL = "/api";
 
 export function getToken(): string | null {
   if (typeof window === "undefined") return null;

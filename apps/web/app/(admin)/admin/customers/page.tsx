@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { api, fmt, fmtDate, getToken } from "@/lib/api";
+import { api, fmt, fmtDate, getToken } from "@/lib/adminApi";
 import { useRouter } from "next/navigation";
 
 export default function CustomersPage() {
@@ -13,7 +13,7 @@ export default function CustomersPage() {
   const [msg, setMsg] = useState("");
 
   useEffect(() => {
-    if (!getToken()) return router.push("/login");
+    if (!getToken()) return router.push("/admin/login");
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

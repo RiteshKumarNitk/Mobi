@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { api, getToken, setToken } from "@/lib/api";
+import { api, getToken, setToken } from "@/lib/adminApi";
 
 const ADMIN_ROLES = ["super_admin", "admin", "manager", "staff"];
 
@@ -15,7 +15,7 @@ export default function AdminLogin() {
 
   // Already signed in? Skip the login form.
   useEffect(() => {
-    if (getToken()) router.replace("/");
+    if (getToken()) router.replace("/admin");
   }, [router]);
 
   const submit = async (e: React.FormEvent) => {
@@ -43,7 +43,7 @@ export default function AdminLogin() {
         return;
       }
       setToken(data.accessToken, data.refreshToken);
-      router.replace("/");
+      router.replace("/admin");
     } catch (err: any) {
       setError(err?.message ?? "Login failed. Please try again.");
     } finally {

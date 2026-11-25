@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { api, fmt, fmtDate, getToken } from "@/lib/api";
+import { api, fmt, fmtDate, getToken } from "@/lib/adminApi";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 
@@ -38,7 +38,7 @@ function OrdersInner() {
   const [msg, setMsg] = useState("");
 
   useEffect(() => {
-    if (!getToken()) return router.push("/login");
+    if (!getToken()) return router.push("/admin/login");
   }, []);
 
   const load = async (p = page, st = status, search = q) => {

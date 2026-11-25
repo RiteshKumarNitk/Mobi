@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { api, getToken } from "@/lib/api";
+import { api, getToken } from "@/lib/adminApi";
 import { useRouter } from "next/navigation";
 
 const GROUPS = ["general", "shipping", "payment", "email", "notification"];
@@ -14,7 +14,7 @@ export default function SettingsPage() {
   const [keys, setKeys] = useState<string[]>([]);
 
   useEffect(() => {
-    if (!getToken()) return router.push("/login");
+    if (!getToken()) return router.push("/admin/login");
   }, []);
 
   const load = async (g = group) => {

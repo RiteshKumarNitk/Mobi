@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { api, fmt, fmtDateTime, getToken, setToken } from "@/lib/api";
+import { api, fmt, fmtDateTime, getToken, setToken } from "@/lib/adminApi";
 
 export default function Dashboard() {
   const router = useRouter();
@@ -12,7 +12,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     if (!getToken()) {
-      router.push("/login");
+      router.push("/admin/login");
       return;
     }
     api("/admin/dashboard")
@@ -20,7 +20,7 @@ export default function Dashboard() {
       .catch((err: any) => {
         if (err?.status === 401) {
           setToken(null);
-          router.push("/login");
+          router.push("/admin/login");
         } else {
           setError(err?.message ?? "Failed to load dashboard");
         }
@@ -56,10 +56,10 @@ export default function Dashboard() {
       </div>
 
       <div className="flex wrap mb-16">
-        <Link href="/products" className="btn sm">+ Add Product</Link>
-        <Link href="/orders" className="btn sm secondary">View Orders</Link>
-        <Link href="/banners" className="btn sm secondary">Create Offer</Link>
-        <Link href="/customers" className="btn sm secondary">Add Customer</Link>
+        <Link href="/admin/products" className="btn sm">+ Add Product</Link>
+        <Link href="/admin/orders" className="btn sm secondary">View Orders</Link>
+        <Link href="/admin/banners" className="btn sm secondary">Create Offer</Link>
+        <Link href="/admin/customers" className="btn sm secondary">Add Customer</Link>
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 16, alignItems: "start" }} className="dash-cols">
@@ -105,7 +105,7 @@ export default function Dashboard() {
           <div className="panel mb-16">
             <h3>Recent Orders</h3>
             {data.recentOrders.map((o: any) => (
-              <Link key={o.id} href={`/orders?q=${o.orderNumber}`} className="between" style={{ padding: "7px 0", borderBottom: "1px solid var(--border)" }}>
+              <Link key={o.id} href={`/admin/orders?q=${o.orderNumber}`} className="between" style={{ padding: "7px 0", borderBottom: "1px solid var(--border)" }}>
                 <span>{o.orderNumber}<br /><span className="small muted">{o.customer}</span></span>
                 <span><span className={`pill ${o.status}`}>{o.status}</span><br /><strong>{fmt(o.total)}</strong></span>
               </Link>

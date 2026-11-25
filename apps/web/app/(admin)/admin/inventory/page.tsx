@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { api, fmt, getToken } from "@/lib/api";
+import { api, fmt, getToken } from "@/lib/adminApi";
 import { useRouter } from "next/navigation";
 
 export default function InventoryPage() {
@@ -16,7 +16,7 @@ export default function InventoryPage() {
   const [msg, setMsg] = useState("");
 
   useEffect(() => {
-    if (!getToken()) return router.push("/login");
+    if (!getToken()) return router.push("/admin/login");
   }, []);
 
   const load = async () => {

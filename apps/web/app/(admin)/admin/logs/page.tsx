@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { api, getToken } from "@/lib/api";
+import { api, API_URL, getToken } from "@/lib/adminApi";
 import { useRouter } from "next/navigation";
 
 export default function LogsPage() {
@@ -11,7 +11,7 @@ export default function LogsPage() {
   const [page, setPage] = useState(1);
 
   useEffect(() => {
-    if (!getToken()) return router.push("/login");
+    if (!getToken()) return router.push("/admin/login");
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -27,7 +27,7 @@ export default function LogsPage() {
 
   const exportLogs = async () => {
     const token = getToken();
-    const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000/api"}/admin/logs/export`, {
+    const res = await fetch(`${API_URL}/admin/logs/export`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     const blob = await res.blob();

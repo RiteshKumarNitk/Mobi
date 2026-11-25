@@ -70,7 +70,7 @@ test("guest cart -> register with OTP -> checkout (COD) -> confirmation", async 
   await page.getByRole("button", { name: /Continue/i }).click();
 
   // 5. Cash on Delivery (never a real payment in tests)
-  await page.getByText("Cash on Delivery").click();
+  await page.getByText("Cash on Delivery", { exact: true }).click();
   await page.getByRole("button", { name: /Review Order/i }).click();
   await page.getByRole("button", { name: /Place Order/i }).click();
 

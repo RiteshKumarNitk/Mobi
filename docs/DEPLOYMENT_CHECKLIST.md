@@ -5,7 +5,7 @@ Nothing in this repository has been deployed. Work through this list top to bott
 ## 1. Infrastructure
 - [ ] Production PostgreSQL. Use a separate Neon project or branch from dev/test; never share the dev database.
 - [ ] Point-in-time restore / automated backups enabled on the DB, with retention ≥ 7 days. Test a restore once before launch.
-- [ ] Three services: API (`:4000`), storefront (`:3000`), admin (`:3001`). Either `docker compose up -d --build` or a host process manager (systemd, pm2) with auto-restart.
+- [ ] Services: storefront with admin at `/admin` and API at `/api` (`:3000`), plus the optional legacy Express API (`:4000`). Either `docker compose up -d --build` or a host process manager (systemd, pm2) with auto-restart.
 - [ ] Domains, for example:
   - `shop.example.com` → web
   - `admin.example.com` → admin (restrict by IP / VPN / SSO if possible)

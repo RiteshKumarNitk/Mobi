@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { api, fmt, fmtDate, getToken } from "@/lib/api";
+import { api, API_URL, fmt, fmtDate, getToken } from "@/lib/adminApi";
 import { useRouter } from "next/navigation";
 
 interface ProductRow {
@@ -25,7 +25,7 @@ interface ProductRow {
   createdAt: string;
 }
 
-const STORE_URL = process.env.NEXT_PUBLIC_STORE_URL ?? "http://localhost:3000";
+const STORE_URL = ""; // storefront is the same app
 
 const EMPTY_FORM = {
   name: "", sku: "", price: "", mrp: "", boxPrice: "", boxQuantity: "", hsnCode: "", stockQuantity: "0",
@@ -51,7 +51,7 @@ export default function AdminProducts() {
   const [csv, setCsv] = useState("");
 
   useEffect(() => {
-    if (!getToken()) return router.push("/login");
+    if (!getToken()) return router.push("/admin/login");
   }, []);
 
   const load = async (pageNum = page, search = q) => {
@@ -137,7 +137,7 @@ export default function AdminProducts() {
   };
 
   const doImport = async () => {
-    const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000/api"}/admin/products/import`, {
+    const res = await fetch(`${API_URL}/admin/products/import`, {
       method: "POST",
       headers: { "Content-Type": "text/csv", Authorization: `Bearer ${getToken()}` },
       body: csv,
