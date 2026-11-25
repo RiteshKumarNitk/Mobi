@@ -20,7 +20,11 @@ export const getCategories = defineRoute(
         },
         orderBy: { displayOrder: "asc" },
       });
-      return found;
+      // A parent category's listing includes its sub-categories' products, so its count must too.
+      return found.map((c) => ({
+        ...c,
+        _count: { products: c._count.products + c.children.reduce((n, child) => n + child._count.products, 0) },
+      }));
     }, res);
     return res.json({ success: true, data: categories });
   }

@@ -15,8 +15,31 @@ assertNonProductionDb("seed demo data (known admin/customer passwords)");
 
 const prisma = new PrismaClient();
 
-const img = (text: string, bg = "0056B3") =>
-  `https://placehold.co/600x600/${bg}/ffffff?text=${encodeURIComponent(text)}`;
+// Demo photos: free CC0 / public-domain stock images served by the storefront
+// from apps/web/public/images/catalog (credits in CREDITS.md there).
+const photo = (name: string) => `/images/catalog/${name}.jpg`;
+const CATEGORY_PHOTO: Record<string, string> = {
+  "mobile-display": "display", "lcd-display": "display", "oled-display": "oled",
+  "battery": "battery", "original-battery": "battery", "compatible-battery": "battery-alt",
+  "charging": "charger", "charger": "charger", "data-cable": "cable",
+  "screen-guard": "screen-guard", "back-panel": "back-panel", "camera": "camera",
+  "audio": "audio", "accessories": "accessories",
+};
+const ALT_PHOTO: Record<string, string> = {
+  "display": "display-alt", "oled": "display-alt", "battery": "battery-alt", "battery-alt": "battery",
+  "charger": "charger-alt", "cable": "cable-alt", "screen-guard": "screen-guard-alt",
+  "back-panel": "back-panel-alt", "camera": "camera-alt", "audio": "audio-alt", "accessories": "accessories-alt",
+};
+const categoryPhoto = (slug: string) => photo(CATEGORY_PHOTO[slug] ?? "accessories");
+const productPhotos = (catSlug: string) => {
+  const main = CATEGORY_PHOTO[catSlug] ?? "accessories";
+  return [
+    { url: photo(main), isPrimary: true, displayOrder: 0 },
+    { url: photo(ALT_PHOTO[main] ?? main), isPrimary: false, displayOrder: 1 },
+  ];
+};
+/** Seed-generated placeholder (older seeds); safe to replace. Admin-uploaded images are never touched. */
+const isPlaceholder = (url?: string | null) => !url || url.includes("placehold.co");
 
 async function main() {
   console.log("Seeding Baba Communication platform...");
@@ -128,8 +151,9 @@ async function main() {
     const cat = await prisma.category.upsert({
       where: { slug },
       update: {},
-      create: { name, slug, description, parentId: parent?.id ?? null, imageUrl: img(name, "17a2b8") },
+      create: { name, slug, description, parentId: parent?.id ?? null, imageUrl: categoryPhoto(slug) },
     });
+    if (isPlaceholder(cat.imageUrl)) await prisma.category.update({ where: { id: cat.id }, data: { imageUrl: categoryPhoto(slug) } });
     categoryIds[slug] = cat.id;
   }
 
@@ -217,6 +241,12 @@ async function main() {
     const existing = await prisma.product.findFirst({ where: { name: def.name }, orderBy: { createdAt: "asc" } });
     if (existing) {
       await prisma.product.update({ where: { id: existing.id }, data: { boxPrice, boxQuantity: 10, hsnCode: HSN[def.cat] ?? "8517" } });
+      // Swap old placeholder pictures for the demo photos, only if every image is a placeholder.
+      const images = await prisma.productImage.findMany({ where: { productId: existing.id }, select: { url: true } });
+      if (images.every((im) => isPlaceholder(im.url))) {
+        await prisma.productImage.deleteMany({ where: { productId: existing.id } });
+        await prisma.productImage.createMany({ data: productPhotos(def.cat).map((im) => ({ ...im, productId: existing.id })) });
+      }
       continue;
     }
     const nameKey = [...def.name].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) % 900, 7) + 100;
@@ -244,12 +274,7 @@ async function main() {
         description: `${def.name}. High-quality replacement part for ${def.brand} smartphones. Compatible with the original and easy to install. Each unit is quality tested before dispatch.`,
         shortDescription: `Replacement ${def.cat.replace("-", " ")} for ${def.brand} phones.`,
         attributes: { create: (def.attrs ?? []).map(([name, value], i) => ({ name, value, displayOrder: i })) },
-        images: {
-          create: [
-            { url: img(def.name.slice(0, 22)), isPrimary: true, displayOrder: 0 },
-            { url: img(def.name.slice(0, 22), "6c757d"), isPrimary: false, displayOrder: 1 },
-          ],
-        },
+        images: { create: productPhotos(def.cat) },
         tags: { connectOrCreate: [{ where: { name: def.brand.toLowerCase() }, create: { name: def.brand.toLowerCase() } }] },
       },
     });
@@ -258,14 +283,23 @@ async function main() {
 
   // ---- Banners ----
   const banners: [string, string, string, string, string][] = [
-    ["B2B Pricing on 10,000+ Spare Parts", "Bulk rates for repair shops & retailers", "homepage", "https://placehold.co/1600x500/0056B3/ffffff?text=Mobile+Spare+Parts+at+B2B+Prices", "/products"],
-    ["New OLED Displays Arrived", "Samsung, Apple, Xiaomi - all models", "homepage", "https://placehold.co/1600x500/17a2b8/ffffff?text=New+OLED+Displays", "/categories/oled-display"],
-    ["Genuine Batteries In Stock", "Original & compatible - 6 month warranty", "homepage", "https://placehold.co/1600x500/28a745/ffffff?text=Genuine+Batteries", "/categories/battery"],
-    ["Flat 10% Off First Order", "Use code WELCOME10", "offers", "https://placehold.co/1200x400/ffc107/212529?text=10%25+OFF+WELCOME10", "/offers"],
-    ["Bulk Order Special", "Extra 5% off orders above ₹10,000 with BULK500", "offers", "https://placehold.co/1200x400/e83e8c/ffffff?text=Bulk+Orders+Save+More", "/offers"],
+    ["B2B Pricing on 10,000+ Spare Parts", "Bulk rates for repair shops & retailers", "homepage", photo("banner-parts"), "/products"],
+    ["New OLED Displays Arrived", "Samsung, Apple, Xiaomi - all models", "homepage", photo("banner-display"), "/categories/oled-display"],
+    ["Genuine Batteries In Stock", "Original & compatible - 6 month warranty", "homepage", photo("banner-battery"), "/categories/battery"],
+    ["Flat 10% Off First Order", "Use code WELCOME10", "offers", photo("banner-offer"), "/offers"],
+    ["Bulk Order Special", "Extra 5% off orders above ₹10,000 with BULK500", "offers", photo("banner-bulk"), "/offers"],
   ];
+  // Idempotent: banners are matched by title, so re-running never duplicates them.
   for (const [title, subtitle, type, imageUrl, linkUrl] of banners) {
-    await prisma.banner.create({ data: { title, subtitle, type: type as any, imageUrl, linkUrl, displayOrder: 0, status: "active" } });
+    const found = await prisma.banner.findMany({ where: { title }, orderBy: { createdAt: "asc" } });
+    if (!found.length) {
+      await prisma.banner.create({ data: { title, subtitle, type: type as any, imageUrl, linkUrl, displayOrder: 0, status: "active" } });
+      continue;
+    }
+    const [keep, ...duplicates] = found;
+    // Remove copies left by older (non-idempotent) seed runs.
+    if (duplicates.length) await prisma.banner.deleteMany({ where: { id: { in: duplicates.map((b) => b.id) } } });
+    if (isPlaceholder(keep.imageUrl)) await prisma.banner.update({ where: { id: keep.id }, data: { imageUrl } });
   }
 
   // ---- Coupons ----
@@ -327,23 +361,24 @@ async function main() {
   }
 
   // ---- Blog ----
-  const blogPosts: [string, string, string, string][] = [
-    ["How to Choose the Right Mobile Display", "display-repair-guide", "Display-repair", "Choosing between LCD, OLED and AMOLED displays for your customers."],
-    ["5 Signs a Phone Battery Needs Replacement", "battery-replacement-signs", "Maintenance", "Know when to recommend a battery replacement to your customers."],
-    ["Wholesale Buying Guide for Repair Shops", "wholesale-buying-guide", "Business", "How to stock your repair shop efficiently and maximise margins."],
+  const blogPosts: [string, string, string, string, string][] = [
+    ["How to Choose the Right Mobile Display", "display-repair-guide", "Display-repair", "Choosing between LCD, OLED and AMOLED displays for your customers.", "blog-display"],
+    ["5 Signs a Phone Battery Needs Replacement", "battery-replacement-signs", "Maintenance", "Know when to recommend a battery replacement to your customers.", "blog-battery"],
+    ["Wholesale Buying Guide for Repair Shops", "wholesale-buying-guide", "Business", "How to stock your repair shop efficiently and maximise margins.", "blog-wholesale"],
   ];
-  for (const [title, slug, category, excerpt] of blogPosts) {
-    await prisma.blogPost.upsert({
+  for (const [title, slug, category, excerpt, image] of blogPosts) {
+    const post = await prisma.blogPost.upsert({
       where: { slug },
       update: {},
       create: {
         title, slug, category, excerpt,
         content: `<p>${excerpt}</p><p>At Baba Communication we help repair shops across India source genuine mobile spare parts at wholesale prices.</p>`,
-        featuredImage: img(title.slice(0, 20), "343a40"),
+        featuredImage: photo(image),
         status: "published",
         publishedAt: new Date(now.getTime() - Math.floor(Math.random() * 30) * 24 * 3600 * 1000),
       },
     });
+    if (isPlaceholder(post.featuredImage)) await prisma.blogPost.update({ where: { id: post.id }, data: { featuredImage: photo(image) } });
   }
 
   // ---- Reviews ----
